@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magic Gesture 3D Controller</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0f;
+            font-family: 'Segoe UI', sans-serif;
+            overflow: hidden;
+            color: #fff;
+        }
+        #container {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+        }
+        #video-panel {
+            width: 35%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #0d0d15;
+            border-right: 1px solid #1a1a2e;
+            position: relative;
+        }
+        #video-wrapper {
+            position: relative;
+            width: 90%;
+            max-width: 480px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 0 30px rgba(100, 100, 255, 0.15);
+        }
+        #webcam {
+            width: 100%;
+            display: block;
+            transform: scaleX(-1);
+        }
+        #canvas-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+            pointer-events: none;
+        }
+        #gesture-info {
+            margin-top: 20px;
+            padding: 12px 24px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            font-size: 14px;
+            text-align: center;
+            min-width: 200px;
+        }
+        #gesture-name {
+            font-size: 22px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 4px;
+        }
+        #gesture-params {
+            color: #888;
+            font-size: 12px;
+        }
+        #three-panel {
+            width: 65%;
+            height: 100%;
+            position: relative;
+        }
+        #three-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        #fps-counter {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            font-size: 12px;
+            color: #4f4;
+            background: rgba(0,0,0,0.6);
+            padding: 4px 8px;
+            border-radius: 4px;
+            z-index: 10;
+        }
+        #status {
+            position: absolute;
+            top: 10px;
+            left: 15px;
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: rgba(0,0,0,0.6);
+            z-index: 10;
+        }
+        .connected { color: #4f4; }
+        .disconnected { color: #f44; }
+        #title-bar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding: 12px 20px;
+            background: linear-gradient(180deg, rgba(10,10,15,0.9), transparent);
+            z-index: 10;
+            pointer-events: none;
+        }
+        #title-bar h1 {
+            font-size: 16px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #667eea, #764ba2, #f093fb);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        #error-display {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 50, 50, 0.2);
+            border: 1px solid rgba(255, 50, 50, 0.4);
+            color: #faa;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 12px;
+            display: none;
+            z-index: 20;
+        }
+    </style>
+</head>
+<body>
+    <div id="title-bar"><h1>Magic Gesture 3D Controller</h1></div>
+    <div id="container">
+        <div id="video-panel">
+            <div id="video-wrapper">
+                <video id="webcam" autoplay playsinline></video>
+                <canvas id="canvas-overlay"></canvas>
+            </div>
+            <div id="gesture-info">
+                <div id="gesture-name">等待手势...</div>
+                <div id="gesture-params"></div>
+            </div>
+        </div>
+        <div id="three-panel">
+            <canvas id="three-canvas"></canvas>
+            <div id="fps-counter">FPS: --</div>
+            <div id="status" class="disconnected">● 断开</div>
+            <div id="error-display"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.min.js"></script>
+    <script>if (typeof THREE === 'undefined') document.write('<script src="/static/three.min.js"><\/script>');</script>
+    <script>
+    window.addEventListener('DOMContentLoaded', function() {
+        // Verify Three.js loaded
+        if (typeof THREE === 'undefined') {
+            document.getElementById('error-display').textContent = 'Three.js 加载失败，请检查网络连接';
+            document.getElementById('error-display').style.display = 'block';
+            return;
+        }
+
+        // === Audio Setup ===
+        let audioCtx = null;
+        function getAudioCtx() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            return audioCtx;
+        }
+        function playWhoosh() {
+            try {
+                const ctx = getAudioCtx();
+                if (ctx.state === 'suspended') ctx.resume();
+                const duration = 0.3;
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                const filter = ctx.createBiquadFilter();
+
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(800, ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + duration);
+
+                filter.type = 'bandpass';
+                filter.frequency.setValueAtTime(1000, ctx.currentTime);
+                filter.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + duration);
+                filter.Q.value = 2;
+
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + duration);
+
+                const bufferSize = Math.floor(ctx.sampleRate * duration);
+                const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+                const data = noiseBuffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+                }
+                const noise = ctx.createBufferSource();
+                noise.buffer = noiseBuffer;
+                const noiseGain = ctx.createGain();
+                noiseGain.gain.setValueAtTime(0.15, ctx.currentTime);
+                noiseGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+                noise.connect(noiseGain);
+                noiseGain.connect(ctx.destination);
+                noise.start();
+                noise.stop(ctx.currentTime + duration);
+            } catch (e) {
+                console.warn('Audio error:', e);
+            }
+        }
+
+        // === WebSocket ===
+        let ws = null;
+        let wsReady = false;
+        const statusEl = document.getElementById('status');
+
+        function connectWS() {
+            try {
+                ws = new WebSocket('ws://' + location.host + '/ws');
+                ws.onopen = function() {
+                    wsReady = true;
+                    statusEl.textContent = '● 已连接';
+                    statusEl.className = 'connected';
+                };
+                ws.onclose = function() {
+                    wsReady = false;
+                    statusEl.textContent = '● 断开';
+                    statusEl.className = 'disconnected';
+                    setTimeout(connectWS, 2000);
+                };
+                ws.onerror = function() { ws.close(); };
+                ws.onmessage = function(event) {
+                    try {
+                        var data = JSON.parse(event.data);
+                        handleGesture(data);
+                    } catch (e) {
+                        console.warn('WS parse error:', e);
+                    }
+                };
+            } catch (e) {
+                console.warn('WS connect error:', e);
+                setTimeout(connectWS, 3000);
+            }
+        }
+        connectWS();
+
+        // === Camera ===
+        const video = document.getElementById('webcam');
+        const overlay = document.getElementById('canvas-overlay');
+        const overlayCtx = overlay.getContext('2d');
+
+        const sendCanvas = document.createElement('canvas');
+        sendCanvas.width = 320;
+        sendCanvas.height = 240;
+        const sendCtx = sendCanvas.getContext('2d');
+
+        navigator.mediaDevices.getUserMedia({
+            video: { width: 320, height: 240, frameRate: { ideal: 20, max: 30 } }
+        }).then(function(stream) {
+            video.srcObject = stream;
+            video.onloadedmetadata = function() {
+                overlay.width = video.videoWidth;
+                overlay.height = video.videoHeight;
+                startSending();
+            };
+        }).catch(function(err) {
+            console.warn('Camera error:', err);
+            document.getElementById('gesture-name').textContent = '摄像头不可用 (3D场景仍可运行)';
+        });
+
+        let lastSendTime = 0;
+        const SEND_INTERVAL = 50;
+
+        function startSending() {
+            function sendFrame() {
+                requestAnimationFrame(sendFrame);
+                var now = performance.now();
+                if (now - lastSendTime < SEND_INTERVAL) return;
+                if (!wsReady) return;
+
+                lastSendTime = now;
+                sendCtx.drawImage(video, 0, 0, 320, 240);
+                var dataUrl = sendCanvas.toDataURL('image/jpeg', 0.6);
+                try {
+                    ws.send(JSON.stringify({ type: 'frame', data: dataUrl }));
+                } catch (e) {}
+            }
+            sendFrame();
+        }
+
+        // === Gesture Handling ===
+        const gestureNameEl = document.getElementById('gesture-name');
+        const gestureParamsEl = document.getElementById('gesture-params');
+
+        let currentGesture = 'none';
+        let targetRotX = 0, targetRotY = 0;
+        let targetScale = 1;
+        let lastWaveTime = 0;
+        let colorIndex = 0;
+        const COLORS = [0x667eea, 0xf093fb, 0x4facfe, 0x43e97b, 0xfa709a, 0xfee140];
+        let trailPoints = [];
+
+        const GESTURE_NAMES = {
+            'none': '等待手势...',
+            'fist': '✊ 握拳 - 旋转',
+            'pinch': '🤏 捏合 - 缩放',
+            'wave': '👋 挥手 - 变色',
+        };
+
+        function handleGesture(data) {
+            currentGesture = data.gesture;
+            gestureNameEl.textContent = GESTURE_NAMES[data.gesture] || '等待手势...';
+
+            if (data.gesture === 'fist') {
+                targetRotX = data.rotation_y;
+                targetRotY = data.rotation_x;
+                gestureParamsEl.textContent = '旋转: X=' + data.rotation_x.toFixed(2) + ' Y=' + data.rotation_y.toFixed(2);
+            } else if (data.gesture === 'pinch') {
+                targetScale = data.scale;
+                gestureParamsEl.textContent = '缩放: ' + data.scale.toFixed(2) + 'x';
+            } else if (data.gesture === 'wave') {
+                var now = Date.now();
+                if (now - lastWaveTime > 800) {
+                    lastWaveTime = now;
+                    colorIndex = (colorIndex + 1) % COLORS.length;
+                    triggerColorChange();
+                    playWhoosh();
+                }
+                gestureParamsEl.textContent = '切换颜色!';
+            } else {
+                gestureParamsEl.textContent = '';
+            }
+
+            if (data.trail && data.trail.length > 0) {
+                trailPoints = data.trail.map(function(p) {
+                    return {
+                        x: (p.x - 0.5) * 6,
+                        y: -(p.y - 0.5) * 4,
+                        z: p.z * 3
+                    };
+                });
+            } else {
+                trailPoints = [];
+            }
+
+            if (data.landmarks) {
+                drawHandOverlay(data.landmarks);
+            }
+        }
+
+        function drawHandOverlay(landmarks) {
+            overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+            var w = overlay.width;
+            var h = overlay.height;
+            if (w === 0 || h === 0) return;
+
+            var connections = [
+                [0,1],[1,2],[2,3],[3,4],
+                [0,5],[5,6],[6,7],[7,8],
+                [5,9],[9,10],[10,11],[11,12],
+                [9,13],[13,14],[14,15],[15,16],
+                [13,17],[17,18],[18,19],[19,20],
+                [0,17]
+            ];
+
+            overlayCtx.strokeStyle = 'rgba(102, 126, 234, 0.8)';
+            overlayCtx.lineWidth = 2;
+            for (var ci = 0; ci < connections.length; ci++) {
+                var a = connections[ci][0], b = connections[ci][1];
+                overlayCtx.beginPath();
+                overlayCtx.moveTo(landmarks[a].x * w, landmarks[a].y * h);
+                overlayCtx.lineTo(landmarks[b].x * w, landmarks[b].y * h);
+                overlayCtx.stroke();
+            }
+
+            for (var li = 0; li < landmarks.length; li++) {
+                overlayCtx.beginPath();
+                overlayCtx.arc(landmarks[li].x * w, landmarks[li].y * h, 4, 0, Math.PI * 2);
+                overlayCtx.fillStyle = li === 0 ? '#f093fb' : '#667eea';
+                overlayCtx.fill();
+            }
+        }
+
+        // === Three.js Scene Setup ===
+        var threePanel = document.getElementById('three-panel');
+        var canvas = document.getElementById('three-canvas');
+
+        // Get actual panel dimensions (wait one frame for layout)
+        var panelWidth = threePanel.clientWidth || window.innerWidth * 0.65;
+        var panelHeight = threePanel.clientHeight || window.innerHeight;
+
+        var renderer = new THREE.WebGLRenderer({
+            canvas: canvas,
+            antialias: true,
+            alpha: false
+        });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(panelWidth, panelHeight);
+        renderer.setClearColor(0x0a0a0f, 1);
+        renderer.outputColorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
+
+        var scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0a0f);
+
+        var camera = new THREE.PerspectiveCamera(60, panelWidth / panelHeight, 0.1, 100);
+        camera.position.set(0, 0, 6);
+        camera.lookAt(0, 0, 0);
+
+        // Lighting - strong enough to see the model
+        var ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+
+        var pointLight1 = new THREE.PointLight(0x667eea, 80, 30);
+        pointLight1.position.set(4, 4, 6);
+        scene.add(pointLight1);
+
+        var pointLight2 = new THREE.PointLight(0xf093fb, 60, 30);
+        pointLight2.position.set(-4, -3, 5);
+        scene.add(pointLight2);
+
+        var pointLight3 = new THREE.PointLight(0x4facfe, 40, 25);
+        pointLight3.position.set(0, 0, -5);
+        scene.add(pointLight3);
+
+        // Magic Ball - Torus Knot (primary model)
+        var torusKnot, torusMat, wireframe;
+        try {
+            var torusGeom = new THREE.TorusKnotGeometry(1.2, 0.35, 128, 32);
+            torusMat = new THREE.MeshStandardMaterial({
+                color: COLORS[0],
+                emissive: COLORS[0],
+                emissiveIntensity: 0.4,
+                metalness: 0.3,
+                roughness: 0.4,
+                transparent: true,
+                opacity: 0.9,
+            });
+            torusKnot = new THREE.Mesh(torusGeom, torusMat);
+            scene.add(torusKnot);
+
+            // Wireframe overlay
+            var wireMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                wireframe: true,
+                transparent: true,
+                opacity: 0.08,
+            });
+            wireframe = new THREE.Mesh(torusGeom, wireMat);
+            scene.add(wireframe);
+        } catch (e) {
+            console.warn('TorusKnot failed, using fallback sphere:', e);
+            var fallbackGeom = new THREE.SphereGeometry(1.5, 32, 32);
+            torusMat = new THREE.MeshStandardMaterial({
+                color: COLORS[0],
+                emissive: COLORS[0],
+                emissiveIntensity: 0.5,
+                metalness: 0.2,
+                roughness: 0.5,
+            });
+            torusKnot = new THREE.Mesh(fallbackGeom, torusMat);
+            scene.add(torusKnot);
+            wireframe = torusKnot;
+        }
+
+        // Outer glow sphere
+        var glowGeom = new THREE.SphereGeometry(2.2, 32, 32);
+        var glowMat = new THREE.MeshBasicMaterial({
+            color: COLORS[0],
+            transparent: true,
+            opacity: 0.05,
+            side: THREE.BackSide,
+        });
+        var glowMesh = new THREE.Mesh(glowGeom, glowMat);
+        scene.add(glowMesh);
+
+        // Particle system for trailing effect
+        var PARTICLE_COUNT = 1500;
+        var particleGeom = new THREE.BufferGeometry();
+        var positions = new Float32Array(PARTICLE_COUNT * 3);
+        var pColors = new Float32Array(PARTICLE_COUNT * 3);
+        var velocities = [];
+        var lifetimes = new Float32Array(PARTICLE_COUNT);
+
+        for (var i = 0; i < PARTICLE_COUNT; i++) {
+            var theta = Math.random() * Math.PI * 2;
+            var phi = Math.random() * Math.PI;
+            var r = 1.5 + Math.random() * 1.0;
+            positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+            positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+            positions[i * 3 + 2] = r * Math.cos(phi);
+            pColors[i * 3] = 0.4;
+            pColors[i * 3 + 1] = 0.5;
+            pColors[i * 3 + 2] = 0.92;
+            velocities.push(new THREE.Vector3(
+                (Math.random() - 0.5) * 0.015,
+                (Math.random() - 0.5) * 0.015,
+                (Math.random() - 0.5) * 0.015
+            ));
+            lifetimes[i] = Math.random();
+        }
+
+        particleGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        particleGeom.setAttribute('color', new THREE.BufferAttribute(pColors, 3));
+
+        var particleMat = new THREE.PointsMaterial({
+            size: 0.05,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+
+        var particles = new THREE.Points(particleGeom, particleMat);
+        scene.add(particles);
+
+        // Hand Trail Particle Line
+        var TRAIL_MAX = 50;
+        var trailGeom = new THREE.BufferGeometry();
+        var trailPositions = new Float32Array(TRAIL_MAX * 3);
+        var trailColorsArr = new Float32Array(TRAIL_MAX * 3);
+        trailGeom.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+        trailGeom.setAttribute('color', new THREE.BufferAttribute(trailColorsArr, 3));
+        trailGeom.setDrawRange(0, 0);
+
+        var trailMat = new THREE.PointsMaterial({
+            size: 0.15,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.9,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true,
+        });
+        var trailMesh = new THREE.Points(trailGeom, trailMat);
+        scene.add(trailMesh);
+
+        // Also add a line for the trail
+        var trailLineGeom = new THREE.BufferGeometry();
+        var trailLinePositions = new Float32Array(TRAIL_MAX * 3);
+        trailLineGeom.setAttribute('position', new THREE.BufferAttribute(trailLinePositions, 3));
+        trailLineGeom.setDrawRange(0, 0);
+        var trailLineMat = new THREE.LineBasicMaterial({
+            color: 0x667eea,
+            transparent: true,
+            opacity: 0.5,
+            blending: THREE.AdditiveBlending,
+        });
+        var trailLine = new THREE.Line(trailLineGeom, trailLineMat);
+        scene.add(trailLine);
+
+        // Pulse ring effects
+        var pulseRings = [];
+        function createPulseRing() {
+            var ringGeom = new THREE.RingGeometry(1.5, 1.8, 64);
+            var ringMat = new THREE.MeshBasicMaterial({
+                color: COLORS[colorIndex],
+                transparent: true,
+                opacity: 0.8,
+                side: THREE.DoubleSide,
+                blending: THREE.AdditiveBlending,
+            });
+            var ring = new THREE.Mesh(ringGeom, ringMat);
+            ring.userData = { life: 1.0 };
+            scene.add(ring);
+            pulseRings.push(ring);
+        }
+
+        // Color change transition state
+        var colorTransition = 0;
+        var prevColor = new THREE.Color(COLORS[0]);
+        var nextColor = new THREE.Color(COLORS[0]);
+
+        function triggerColorChange() {
+            prevColor.copy(torusMat.color);
+            nextColor.set(COLORS[colorIndex]);
+            colorTransition = 1.0;
+            createPulseRing();
+            glowMat.color.set(COLORS[colorIndex]);
+        }
+
+        // === Animation Loop ===
+        var frameCount = 0;
+        var lastFpsTime = performance.now();
+        var fpsEl = document.getElementById('fps-counter');
+
+        var smoothRotX = 0, smoothRotY = 0, smoothScale = 1;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            var time = performance.now() * 0.001;
+
+            // FPS counter
+            frameCount++;
+            if (performance.now() - lastFpsTime > 1000) {
+                fpsEl.textContent = 'FPS: ' + frameCount;
+                frameCount = 0;
+                lastFpsTime = performance.now();
+            }
+
+            // Smooth interpolation
+            smoothRotX += (targetRotX - smoothRotX) * 0.08;
+            smoothRotY += (targetRotY - smoothRotY) * 0.08;
+            smoothScale += (targetScale - smoothScale) * 0.08;
+
+            // Apply rotation
+            if (currentGesture === 'fist') {
+                torusKnot.rotation.x = smoothRotX;
+                torusKnot.rotation.y = smoothRotY;
+            } else {
+                torusKnot.rotation.x += 0.004;
+                torusKnot.rotation.y += 0.006;
+            }
+            if (wireframe !== torusKnot) {
+                wireframe.rotation.copy(torusKnot.rotation);
+            }
+
+            // Apply scale
+            var s = smoothScale;
+            torusKnot.scale.set(s, s, s);
+            if (wireframe !== torusKnot) {
+                wireframe.scale.set(s, s, s);
+            }
+            glowMesh.scale.set(s, s, s);
+
+            // Color transition
+            if (colorTransition > 0) {
+                colorTransition -= 0.02;
+                if (colorTransition < 0) colorTransition = 0;
+                var t = 1 - colorTransition;
+                var c = new THREE.Color().lerpColors(prevColor, nextColor, t);
+                torusMat.color.copy(c);
+                torusMat.emissive.copy(c);
+                torusMat.emissiveIntensity = 0.4 + colorTransition * 0.6;
+            }
+
+            // Update particles
+            var posArr = particleGeom.attributes.position.array;
+            var colArr = particleGeom.attributes.color.array;
+            var currentColor = new THREE.Color(COLORS[colorIndex]);
+
+            for (var i = 0; i < PARTICLE_COUNT; i++) {
+                lifetimes[i] -= 0.004;
+                if (lifetimes[i] <= 0) {
+                    lifetimes[i] = 1.0;
+                    var theta2 = Math.random() * Math.PI * 2;
+                    var phi2 = Math.random() * Math.PI;
+                    var r2 = 1.3 + Math.random() * 0.6;
+                    posArr[i * 3] = r2 * Math.sin(phi2) * Math.cos(theta2);
+                    posArr[i * 3 + 1] = r2 * Math.sin(phi2) * Math.sin(theta2);
+                    posArr[i * 3 + 2] = r2 * Math.cos(phi2);
+                }
+
+                var flowX = velocities[i].x;
+                var flowY = velocities[i].y;
+                var flowZ = velocities[i].z;
+
+                if (currentGesture === 'fist') {
+                    flowX += Math.sin(smoothRotY) * 0.008;
+                    flowY += Math.cos(smoothRotX) * 0.008;
+                    flowZ += Math.sin(time + i * 0.01) * 0.004;
+                }
+
+                posArr[i * 3] += flowX;
+                posArr[i * 3 + 1] += flowY;
+                posArr[i * 3 + 2] += flowZ;
+
+                var dx = posArr[i * 3];
+                var dy = posArr[i * 3 + 1];
+                var dz = posArr[i * 3 + 2];
+                var dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist > 3.5) {
+                    var norm = 1.3 / dist;
+                    posArr[i * 3] *= norm;
+                    posArr[i * 3 + 1] *= norm;
+                    posArr[i * 3 + 2] *= norm;
+                    lifetimes[i] = 1.0;
+                }
+
+                // Pulse effect on pinch
+                if (currentGesture === 'pinch') {
+                    var pulse = Math.sin(time * 8) * 0.008;
+                    posArr[i * 3] *= (1 + pulse);
+                    posArr[i * 3 + 1] *= (1 + pulse);
+                    posArr[i * 3 + 2] *= (1 + pulse);
+                }
+
+                colArr[i * 3] = currentColor.r * (0.3 + lifetimes[i] * 0.7);
+                colArr[i * 3 + 1] = currentColor.g * (0.3 + lifetimes[i] * 0.7);
+                colArr[i * 3 + 2] = currentColor.b * (0.3 + lifetimes[i] * 0.7);
+            }
+            particleGeom.attributes.position.needsUpdate = true;
+            particleGeom.attributes.color.needsUpdate = true;
+
+            // Update hand trail
+            if (trailPoints.length > 1) {
+                var count = Math.min(trailPoints.length, TRAIL_MAX);
+                var tp = trailGeom.attributes.position.array;
+                var tc = trailGeom.attributes.color.array;
+                var tlp = trailLineGeom.attributes.position.array;
+                for (var ti = 0; ti < count; ti++) {
+                    var p = trailPoints[ti];
+                    tp[ti * 3] = p.x;
+                    tp[ti * 3 + 1] = p.y;
+                    tp[ti * 3 + 2] = p.z;
+                    tlp[ti * 3] = p.x;
+                    tlp[ti * 3 + 1] = p.y;
+                    tlp[ti * 3 + 2] = p.z;
+                    var tt = ti / count;
+                    tc[ti * 3] = 0.4 + tt * 0.6;
+                    tc[ti * 3 + 1] = 0.2 + tt * 0.5;
+                    tc[ti * 3 + 2] = 0.9;
+                }
+                trailGeom.setDrawRange(0, count);
+                trailGeom.attributes.position.needsUpdate = true;
+                trailGeom.attributes.color.needsUpdate = true;
+                trailLineGeom.setDrawRange(0, count);
+                trailLineGeom.attributes.position.needsUpdate = true;
+            } else {
+                trailGeom.setDrawRange(0, 0);
+                trailLineGeom.setDrawRange(0, 0);
+            }
+
+            // Update pulse rings
+            for (var ri = pulseRings.length - 1; ri >= 0; ri--) {
+                var ring = pulseRings[ri];
+                ring.userData.life -= 0.012;
+                if (ring.userData.life <= 0) {
+                    scene.remove(ring);
+                    ring.geometry.dispose();
+                    ring.material.dispose();
+                    pulseRings.splice(ri, 1);
+                } else {
+                    var rscale = 1 + (1 - ring.userData.life) * 3;
+                    ring.scale.set(rscale, rscale, rscale);
+                    ring.material.opacity = ring.userData.life * 0.6;
+                    ring.rotation.x = torusKnot.rotation.x;
+                    ring.rotation.y = torusKnot.rotation.y;
+                }
+            }
+
+            // Emissive pulse on pinch
+            if (currentGesture === 'pinch') {
+                torusMat.emissiveIntensity = 0.4 + Math.sin(time * 6) * 0.35;
+                glowMat.opacity = 0.05 + Math.sin(time * 6) * 0.04;
+            } else {
+                glowMat.opacity = 0.05;
+            }
+
+            // Ambient rotation for lights
+            pointLight1.position.x = Math.sin(time * 0.5) * 5;
+            pointLight1.position.z = Math.cos(time * 0.5) * 5 + 2;
+            pointLight2.position.x = Math.cos(time * 0.7) * 4;
+            pointLight2.position.y = Math.sin(time * 0.7) * 4;
+
+            renderer.render(scene, camera);
+        }
+
+        // Start animation
+        animate();
+
+        // Resize handler
+        window.addEventListener('resize', function() {
+            var w = threePanel.clientWidth;
+            var h = threePanel.clientHeight;
+            if (w > 0 && h > 0) {
+                renderer.setSize(w, h);
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+            }
+        });
+
+        // Force a resize after a short delay to ensure correct sizing
+        setTimeout(function() {
+            var w = threePanel.clientWidth;
+            var h = threePanel.clientHeight;
+            if (w > 0 && h > 0) {
+                renderer.setSize(w, h);
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+            }
+        }, 100);
+
+    }); // end DOMContentLoaded
+    </script>
+</body>
+</html>
