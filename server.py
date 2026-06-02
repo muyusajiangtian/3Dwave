@@ -2,51 +2,117 @@ import asyncio
 import base64
 import json
 import math
+import os
+import socket
+import sys
 import time
+import traceback
 from collections import deque, Counter
+from pathlib import Path
 
 import cv2
 import numpy as np
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision
+
+# ============================================================
+# Logging
+# ============================================================
+_start_time = time.time()
+
+def log(tag, msg):
+    elapsed = time.time() - _start_time
+    print(f"[{elapsed:8.2f}s][{tag}] {msg}", flush=True)
+
+
+# ============================================================
+# MediaPipe initialization with retry and model discovery
+# ============================================================
+def find_model_file():
+    """Search for hand_landmarker.task in common locations."""
+    candidates = [
+        Path("hand_landmarker.task"),
+        Path(__file__).parent / "hand_landmarker.task",
+        Path(__file__).parent / "models" / "hand_landmarker.task",
+        Path.home() / "hand_landmarker.task",
+    ]
+    for p in candidates:
+        if p.exists():
+            log("MODEL", f"Found model at: {p.resolve()}")
+            return str(p.resolve())
+    return None
+
+
+def init_mediapipe(max_retries=3):
+    """Initialize MediaPipe HandLandmarker with retries."""
+    import mediapipe as mp_lib
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision
+
+    model_path = find_model_file()
+    if model_path is None:
+        log("ERROR", "=" * 60)
+        log("ERROR", "hand_landmarker.task NOT FOUND!")
+        log("ERROR", "Download from:")
+        log("ERROR", "  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task")
+        log("ERROR", f"Place it in: {Path(__file__).parent.resolve()}")
+        log("ERROR", "=" * 60)
+        sys.exit(1)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            log("INIT", f"MediaPipe init attempt {attempt}/{max_retries} ...")
+            base_options = mp_python.BaseOptions(model_asset_path=model_path)
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options,
+                running_mode=vision.RunningMode.IMAGE,
+                num_hands=2,
+                min_hand_detection_confidence=0.40,
+                min_hand_presence_confidence=0.40,
+                min_tracking_confidence=0.35,
+            )
+            landmarker = vision.HandLandmarker.create_from_options(options)
+            log("INIT", f"MediaPipe HandLandmarker ready (num_hands=2, model={model_path})")
+            return landmarker, mp_lib
+        except Exception as e:
+            log("ERROR", f"MediaPipe init failed (attempt {attempt}): {e}")
+            if attempt < max_retries:
+                time.sleep(1)
+            else:
+                log("ERROR", "All retries exhausted. Cannot initialize MediaPipe.")
+                traceback.print_exc()
+                sys.exit(1)
+
+
+hand_landmarker, mp = init_mediapipe()
+
+# ============================================================
+# FastAPI setup
+# ============================================================
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 app = FastAPI()
 
-base_options = mp_python.BaseOptions(model_asset_path='hand_landmarker.task')
-options = vision.HandLandmarkerOptions(
-    base_options=base_options,
-    running_mode=vision.RunningMode.IMAGE,
-    num_hands=1,
-    min_hand_detection_confidence=0.7,
-    min_hand_presence_confidence=0.7,
-    min_tracking_confidence=0.6,
-)
-hand_landmarker = vision.HandLandmarker.create_from_options(options)
-
 # ============================================================
 # Thresholds
 # ============================================================
-# Fist: weighted curl of all 5 fingers. Half-fist triggers at 0.32.
-FIST_CURL_THRESHOLD = 0.32
+FIST_CURL_THRESHOLD = 0.30
+PINCH_RATIO = 0.50
+WAVE_FRAMES = 4
+WAVE_SPEED_THRESHOLD = 0.25  # 降低：基于归一化掌心速度，更灵敏
+WAVE_COOLDOWN = 0.8
+EMA_ALPHA = 0.30  # 稍微平滑一些，减少远距离抖动
+MIN_HAND_CONFIDENCE = 0.40  # 降低：允许远距离手部检测
 
-# Pinch: thumb-index distance relative to palm size.
-# Pinch requires: distance < palm_size * PINCH_RATIO AND other 3 fingers NOT all curled.
-PINCH_RATIO = 0.45
+POINTING_INDEX_MAX_CURL = 0.28
+POINTING_OTHER_MIN_CURL = 0.32
 
-# Wave: cumulative displacement over 5 frames, speed > threshold
-WAVE_FRAMES = 5
-WAVE_SPEED_THRESHOLD = 0.45
-WAVE_COOLDOWN = 1.0  # seconds between wave triggers
+PROXIMITY_THRESHOLD = 0.12
+PROXIMITY_HOLD_TIME = 1.0
 
-# Smoothing
-EMA_ALPHA = 0.35
-
-# MediaPipe handedness confidence filter
-MIN_HAND_CONFIDENCE = 0.65
+# 数字识别阈值 - 使用指尖高于对应MCP关节来判断伸展
+DIGIT_EXTENDED_CURL_THRESHOLD = 0.28  # curl < 此值 = 手指伸展
+DIGIT_THUMB_DISTANCE_RATIO = 0.5  # 拇指尖到食指MCP的距离/手掌宽度
 
 # ============================================================
 # Geometry helpers
@@ -56,8 +122,11 @@ def dist3(p1, p2):
     return math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2 + (p1.z-p2.z)**2)
 
 
+def dist3_xy(p1, p2):
+    return math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2)
+
+
 def angle_at(a, b, c):
-    """Angle (radians) at vertex b in triangle a-b-c."""
     ba = (a.x-b.x, a.y-b.y, a.z-b.z)
     bc = (c.x-b.x, c.y-b.y, c.z-b.z)
     dot_val = ba[0]*bc[0] + ba[1]*bc[1] + ba[2]*bc[2]
@@ -71,7 +140,6 @@ def angle_at(a, b, c):
 # ============================================================
 # Per-finger curl computation
 # ============================================================
-# Landmark indices: [MCP, PIP, DIP, TIP]
 FINGERS = {
     'thumb':  [1, 2, 3, 4],
     'index':  [5, 6, 7, 8],
@@ -80,59 +148,125 @@ FINGERS = {
     'pinky':  [17, 18, 19, 20],
 }
 
-# Weighted importance for fist detection
 FIST_WEIGHTS = {'thumb': 0.12, 'index': 0.24, 'middle': 0.24, 'ring': 0.20, 'pinky': 0.20}
 
 
 def finger_curl(landmarks, indices):
-    """Return curl value in [0,1]. 0=straight, 1=fully curled.
-    Based on PIP angle and DIP angle (smaller angle = more curled)."""
     mcp, pip, dip, tip = [landmarks[i] for i in indices]
-    # For thumb, indices are CMC, MCP, IP, TIP
     ang_pip = angle_at(mcp, pip, dip)
     ang_dip = angle_at(pip, dip, tip)
-    # pi = straight (curl=0), small angle = curled (curl->1)
     c_pip = 1.0 - ang_pip / math.pi
     c_dip = 1.0 - ang_dip / math.pi
     return c_pip * 0.55 + c_dip * 0.45
 
 
 def compute_all_curls(landmarks):
-    """Returns dict of finger -> curl value."""
     return {name: finger_curl(landmarks, idx) for name, idx in FINGERS.items()}
 
 
 def compute_fist_strength(curls):
-    """Weighted average of all finger curls."""
     return sum(curls[f] * FIST_WEIGHTS[f] for f in FIST_WEIGHTS)
 
 
 def palm_size(landmarks):
-    """Distance from wrist to middle MCP as palm reference size."""
     return dist3(landmarks[0], landmarks[9])
 
 
+def palm_center(landmarks):
+    cx = (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5
+    cy = (landmarks[0].y + landmarks[5].y + landmarks[9].y + landmarks[13].y + landmarks[17].y) / 5
+    cz = (landmarks[0].z + landmarks[5].z + landmarks[9].z + landmarks[13].z + landmarks[17].z) / 5
+    return cx, cy, cz
+
+
 # ============================================================
-# Gesture State Machine
+# Digit Recognition（改进版：指尖计数 + 相邻手指间距辅助）
+# ============================================================
+def is_finger_extended(landmarks, finger_name, curls):
+    """判断手指是否伸展，综合 curl 值 + 指尖相对于MCP的y坐标。"""
+    indices = FINGERS[finger_name]
+    tip = landmarks[indices[3]]
+    mcp = landmarks[indices[0]]
+
+    # curl 值判定
+    curl_extended = curls[finger_name] < DIGIT_EXTENDED_CURL_THRESHOLD
+
+    # 指尖应在MCP上方（y坐标更小 = 更上方，归一化坐标系）
+    tip_above_mcp = tip.y < mcp.y + 0.02
+
+    return curl_extended and tip_above_mcp
+
+
+def is_thumb_extended(landmarks, p_size):
+    """拇指判定：使用拇指尖到手掌的横向距离。"""
+    thumb_tip = landmarks[4]
+    thumb_mcp = landmarks[2]
+    index_mcp = landmarks[5]
+    wrist = landmarks[0]
+
+    # 拇指尖到食指MCP的水平距离（相对手掌大小）
+    dx = abs(thumb_tip.x - index_mcp.x)
+    ratio = dx / p_size if p_size > 0.01 else 0
+
+    # 拇指尖应远离手掌中心
+    return ratio > DIGIT_THUMB_DISTANCE_RATIO
+
+
+def recognize_digit(curls, landmarks):
+    """
+    精确数字识别：
+    - 使用 curl + 指尖位置双重判定
+    - 区分2和3：2=食指+中指，3=食指+中指+无名指
+    - 返回 0-5 的整数
+    """
+    p_size = palm_size(landmarks)
+
+    # 判定每根手指
+    thumb_ext = is_thumb_extended(landmarks, p_size)
+    index_ext = is_finger_extended(landmarks, 'index', curls)
+    middle_ext = is_finger_extended(landmarks, 'middle', curls)
+    ring_ext = is_finger_extended(landmarks, 'ring', curls)
+    pinky_ext = is_finger_extended(landmarks, 'pinky', curls)
+
+    fingers_state = {
+        'thumb': thumb_ext,
+        'index': index_ext,
+        'middle': middle_ext,
+        'ring': ring_ext,
+        'pinky': pinky_ext,
+    }
+
+    # 计算伸展手指数量
+    count = sum(1 for v in fingers_state.values() if v)
+
+    return count, fingers_state
+
+
+# ============================================================
+# Gesture State Machine (per hand) - 增强版
 # ============================================================
 class GestureStateMachine:
-    """
-    States: none, fist, pinch, wave
-    Transitions require majority vote over N frames.
-    Wave has cooldown timer.
-    """
-    def __init__(self):
+    def __init__(self, hand_label="unknown"):
+        self.hand_label = hand_label
         self.state = "none"
-        self.history = deque(maxlen=7)  # raw gesture per frame
+        self.history = deque(maxlen=9)  # 增加到9帧，投票窗口更大
         self.wave_last_time = 0.0
         self.frame_count = 0
-        # Position history for wave detection (x, timestamp)
-        self.pos_history = deque(maxlen=20)
-        # EMA values
+        self.pos_history = deque(maxlen=25)  # 掌心轨迹增加
         self.ema_fist = None
         self.ema_pinch_dist = None
         self.ema_rot_x = None
         self.ema_rot_y = None
+        self.transition_cooldown = 0
+        self._last_log_time = 0
+        # 新增：独立的握拳/捏合帧计数器（多帧确认）
+        self.fist_confirm_count = 0
+        self.pinch_confirm_count = 0
+        self.wave_confirm_count = 0
+        # 新增：EMA平滑后的掌心速度
+        self.ema_palm_speed = None
+        # 新增：上一帧掌心大小用于归一化
+        self.last_palm_size = 0.1
 
     def ema(self, prev, new, alpha=EMA_ALPHA):
         if prev is None:
@@ -140,163 +274,220 @@ class GestureStateMachine:
         return prev * (1.0 - alpha) + new * alpha
 
     def update(self, landmarks):
-        """Process one frame. Returns gesture result dict with all debug info."""
         self.frame_count += 1
         now = time.time()
 
         wrist = landmarks[0]
-        self.pos_history.append((wrist.x, wrist.y, now))
+        pcx, pcy, pcz = palm_center(landmarks)
+        self.pos_history.append((pcx, pcy, now))
 
-        # --- Compute raw metrics ---
         curls = compute_all_curls(landmarks)
         fist_strength_raw = compute_fist_strength(curls)
         p_size = palm_size(landmarks)
+        self.last_palm_size = p_size if p_size > 0.01 else self.last_palm_size
 
         thumb_tip = landmarks[4]
         index_tip = landmarks[8]
         pinch_dist_raw = dist3(thumb_tip, index_tip)
-
-        # Normalized pinch distance (relative to palm size)
         pinch_norm = pinch_dist_raw / p_size if p_size > 0.01 else 1.0
 
-        # --- EMA smooth continuous values ---
         self.ema_fist = self.ema(self.ema_fist, fist_strength_raw)
         self.ema_pinch_dist = self.ema(self.ema_pinch_dist, pinch_norm)
         fist_strength = self.ema_fist
         pinch_normalized = self.ema_pinch_dist
 
-        # --- Classify raw gesture for this frame ---
+        # 计算归一化掌心速度（相对于手掌大小）
+        palm_speed_norm = self._compute_palm_speed_normalized()
+
         raw_gesture = self._classify_frame(
-            curls, fist_strength, pinch_normalized, p_size, now
+            curls, fist_strength, pinch_normalized, p_size, now, landmarks, palm_speed_norm
         )
 
-        # --- Majority vote (last 5 frames) ---
         self.history.append(raw_gesture)
         voted_gesture = self._majority_vote()
-
-        # --- State transition with hysteresis ---
         final_gesture = self._apply_state_machine(voted_gesture, now)
 
-        # --- Compute output parameters ---
+        digit, fingers_state = recognize_digit(curls, landmarks)
+
         result = self._build_result(
             final_gesture, landmarks, curls, fist_strength,
-            pinch_dist_raw, pinch_normalized, p_size, now
+            pinch_dist_raw, pinch_normalized, p_size, now, digit, fingers_state,
+            palm_speed_norm
         )
 
-        # --- Debug log ---
-        self._log_frame(curls, fist_strength_raw, fist_strength,
-                        pinch_dist_raw, pinch_normalized,
-                        raw_gesture, voted_gesture, final_gesture, result)
+        # 调试日志：每0.4s输出一次
+        if now - self._last_log_time > 0.4:
+            self._last_log_time = now
+            curl_str = " ".join(f"{k[0].upper()}:{v:.2f}" for k, v in curls.items())
+            fingers_str = "".join("1" if fingers_state[f] else "0"
+                                  for f in ['thumb','index','middle','ring','pinky'])
+            log(f"GSM-{self.hand_label}",
+                f"F{self.frame_count:04d} final={final_gesture} "
+                f"fist={fist_strength:.3f} pinch_n={pinch_normalized:.3f} "
+                f"speed={palm_speed_norm:.3f} digit={digit}({fingers_str}) "
+                f"curls=[{curl_str}] raw={raw_gesture} vote={voted_gesture} "
+                f"fist_cf={self.fist_confirm_count} pinch_cf={self.pinch_confirm_count}")
 
         return result
 
-    def _classify_frame(self, curls, fist_strength, pinch_norm, p_size, now):
-        """Determine raw gesture for single frame. STRICT disambiguation."""
+    def _compute_palm_speed_normalized(self):
+        """计算掌心移动速度，归一化到手掌大小。远距离时手掌变小，归一化后挥手更容易被检测到。"""
+        if len(self.pos_history) < 3:
+            return 0.0
 
-        # === FIST CHECK ===
-        # Fist = ALL 5 fingers simultaneously curling toward palm
-        # Key: even half-fist (fist_strength >= threshold) triggers
-        # But we need ALL fingers contributing - no single finger can be too open
+        recent = list(self.pos_history)[-WAVE_FRAMES:]
+        if len(recent) < 2:
+            return 0.0
+
+        total_time = recent[-1][2] - recent[0][2]
+        if total_time < 0.02:
+            return 0.0
+
+        # 累积位移（x+y）
+        cum_disp = 0.0
+        for i in range(1, len(recent)):
+            dx = abs(recent[i][0] - recent[i-1][0])
+            dy = abs(recent[i][1] - recent[i-1][1])
+            cum_disp += math.sqrt(dx*dx + dy*dy)
+
+        # 归一化到手掌大小
+        speed_raw = cum_disp / total_time
+        speed_norm = speed_raw / self.last_palm_size if self.last_palm_size > 0.01 else speed_raw
+
+        # EMA平滑速度
+        self.ema_palm_speed = self.ema(self.ema_palm_speed, speed_norm, 0.4)
+        return self.ema_palm_speed
+
+    def _classify_frame(self, curls, fist_strength, pinch_norm, p_size, now, landmarks, palm_speed_norm):
+        # === 握拳检测（增强：多帧确认） ===
         is_fist = False
         if fist_strength >= FIST_CURL_THRESHOLD:
-            # Additional check: at least 4 of 5 fingers have curl > 0.2
-            curled_count = sum(1 for v in curls.values() if v > 0.2)
+            curled_count = sum(1 for v in curls.values() if v > 0.18)
             if curled_count >= 4:
-                is_fist = True
+                self.fist_confirm_count = min(self.fist_confirm_count + 1, 10)
+                if self.fist_confirm_count >= 2:  # 需连续2帧确认
+                    is_fist = True
+            else:
+                self.fist_confirm_count = max(0, self.fist_confirm_count - 1)
+        else:
+            self.fist_confirm_count = max(0, self.fist_confirm_count - 1)
 
-        # === PINCH CHECK ===
-        # Pinch = thumb+index tips close, OTHER 3 fingers NOT curled toward palm
-        # Key distinction from fist: middle/ring/pinky must be RELAXED (not curled)
+        # === 食指指向检测 ===
+        is_pointing = False
+        if curls['index'] < POINTING_INDEX_MAX_CURL:
+            other_curled = (curls['middle'] > POINTING_OTHER_MIN_CURL and
+                          curls['ring'] > POINTING_OTHER_MIN_CURL and
+                          curls['pinky'] > POINTING_OTHER_MIN_CURL)
+            if other_curled and not is_fist:
+                is_pointing = True
+
+        # === 捏合检测（增强：多帧确认） ===
         is_pinch = False
         if pinch_norm < PINCH_RATIO:
-            # The other 3 fingers must NOT all be curled
-            # For pinch: middle, ring, pinky should be relatively extended
             other_avg_curl = (curls['middle'] + curls['ring'] + curls['pinky']) / 3.0
-            # Pinch: other fingers average curl < 0.35 (relaxed/extended)
-            # Fist: other fingers average curl > 0.35 (all curling)
-            if other_avg_curl < 0.35:
-                is_pinch = True
+            if other_avg_curl < 0.38:
+                self.pinch_confirm_count = min(self.pinch_confirm_count + 1, 10)
+                if self.pinch_confirm_count >= 2:  # 需连续2帧确认
+                    is_pinch = True
+            else:
+                self.pinch_confirm_count = max(0, self.pinch_confirm_count - 1)
+        else:
+            self.pinch_confirm_count = max(0, self.pinch_confirm_count - 1)
 
-        # === DISAMBIGUATION ===
-        # If both could trigger, decide based on the clearer signal
+        # === 消歧 ===
         if is_fist and is_pinch:
-            # Compare: if other fingers are quite curled, it's a fist
             other_avg = (curls['middle'] + curls['ring'] + curls['pinky']) / 3.0
             if other_avg > 0.25:
-                is_pinch = False  # Other fingers curling -> fist, not pinch
+                is_pinch = False
+                self.pinch_confirm_count = 0
             else:
-                is_fist = False   # Other fingers open -> pinch, not fist
+                is_fist = False
+                self.fist_confirm_count = 0
 
+        if is_fist and is_pointing:
+            is_pointing = False
+
+        if is_pointing:
+            return "pointing"
         if is_pinch:
             return "pinch"
         if is_fist:
             return "fist"
 
-        # === WAVE CHECK ===
-        # Cumulative x-displacement over last 5 frames, with speed threshold
-        if len(self.pos_history) >= WAVE_FRAMES and fist_strength < 0.25:
+        # === 挥手检测（改进：归一化掌心速度 + x方向振荡） ===
+        if len(self.pos_history) >= WAVE_FRAMES and fist_strength < 0.28:
             recent = list(self.pos_history)[-WAVE_FRAMES:]
             total_time = recent[-1][2] - recent[0][2]
-            if total_time > 0.05:
-                # Cumulative absolute x displacement
-                cum_disp = sum(abs(recent[i][0] - recent[i-1][0]) for i in range(1, len(recent)))
-                avg_speed = cum_disp / total_time
-
-                # Check x-range (must have actual oscillation, not just drift)
+            if total_time > 0.04:
+                # x方向振荡检测
                 xs = [p[0] for p in recent]
                 x_range = max(xs) - min(xs)
+                # 归一化到手掌大小
+                x_range_norm = x_range / self.last_palm_size if self.last_palm_size > 0.01 else x_range
 
-                # Direction changes in the window
+                # 方向变化
                 dir_changes = 0
                 for i in range(2, len(xs)):
                     if (xs[i]-xs[i-1]) * (xs[i-1]-xs[i-2]) < -0.0001:
                         dir_changes += 1
 
-                if avg_speed > WAVE_SPEED_THRESHOLD and x_range > 0.06 and dir_changes >= 1:
-                    # Check cooldown
-                    if now - self.wave_last_time > WAVE_COOLDOWN:
+                # 使用归一化速度判定（远距离时手掌变小，速度归一化后更容易触发）
+                speed_ok = palm_speed_norm > WAVE_SPEED_THRESHOLD
+                oscillation_ok = x_range_norm > 0.3 and dir_changes >= 1
+
+                if speed_ok and oscillation_ok:
+                    self.wave_confirm_count += 1
+                    if self.wave_confirm_count >= 2 and now - self.wave_last_time > WAVE_COOLDOWN:
+                        self.wave_confirm_count = 0
                         return "wave"
+                else:
+                    self.wave_confirm_count = max(0, self.wave_confirm_count - 1)
+        else:
+            self.wave_confirm_count = max(0, self.wave_confirm_count - 1)
 
         return "none"
 
     def _majority_vote(self):
-        """5-frame majority vote from history."""
         if len(self.history) < 3:
             return self.history[-1] if self.history else "none"
 
-        # Use last 5 frames (or whatever is available up to 5)
-        window = list(self.history)[-5:]
+        # 使用最近7帧进行投票（增大窗口提高稳定性）
+        window = list(self.history)[-7:]
         counts = Counter(window)
         winner, count = counts.most_common(1)[0]
 
-        # Require at least 3 out of 5 (or 2 out of 3 if less history)
-        threshold = max(2, len(window) // 2 + 1)
+        # 需要至少4/7的多数票
+        threshold = max(3, len(window) // 2 + 1)
         if count >= threshold:
             return winner
-        # If no clear majority, stick with most recent that's not 'none'
+
+        # 如果无清晰多数，取最近出现的非none
         for g in reversed(window):
             if g != "none":
                 return g
         return "none"
 
     def _apply_state_machine(self, voted, now):
-        """Apply state transitions with minimum hold time."""
         if voted == self.state:
+            self.transition_cooldown = 0
             return self.state
 
-        # Transition allowed - update state
+        if self.transition_cooldown > 0:
+            self.transition_cooldown -= 1
+            return self.state
+
         if voted == "wave":
             self.wave_last_time = now
+
         self.state = voted
+        self.transition_cooldown = 2
         return voted
 
     def _build_result(self, gesture, landmarks, curls, fist_strength,
-                      pinch_dist_raw, pinch_norm, p_size, now):
-        """Build the output JSON result."""
+                      pinch_dist_raw, pinch_norm, p_size, now, digit, fingers_state,
+                      palm_speed_norm):
         wrist = landmarks[0]
-        palm_cx = (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5
-        palm_cy = (landmarks[0].y + landmarks[5].y + landmarks[9].y + landmarks[13].y + landmarks[17].y) / 5
-        palm_cz = (landmarks[0].z + landmarks[5].z + landmarks[9].z + landmarks[13].z + landmarks[17].z) / 5
+        pcx, pcy, pcz = palm_center(landmarks)
 
         result = {
             "gesture": gesture,
@@ -304,9 +495,13 @@ class GestureStateMachine:
             "pinch_distance": round(pinch_dist_raw, 4),
             "pinch_normalized": round(pinch_norm, 4),
             "confidence": 0.0,
-            "palm": {"x": round(palm_cx, 4), "y": round(palm_cy, 4), "z": round(palm_cz, 4)},
+            "palm": {"x": round(pcx, 4), "y": round(pcy, 4), "z": round(pcz, 4)},
             "frame_id": self.frame_count,
             "curls": {k: round(v, 3) for k, v in curls.items()},
+            "digit": digit,
+            "fingers": {k: v for k, v in fingers_state.items()},
+            "hand": self.hand_label,
+            "palm_speed": round(palm_speed_norm, 3),
         }
 
         if gesture == "fist":
@@ -325,52 +520,238 @@ class GestureStateMachine:
             result["scale"] = round(scale, 3)
             result["confidence"] = round(min(1.0, pinch_intensity + 0.3), 3)
 
+        elif gesture == "pointing":
+            index_tip = landmarks[8]
+            result["pointing_x"] = round(index_tip.x, 4)
+            result["pointing_y"] = round(index_tip.y, 4)
+            result["confidence"] = 0.85
+
         elif gesture == "wave":
-            # Compute speed for display
-            if len(self.pos_history) >= WAVE_FRAMES:
-                recent = list(self.pos_history)[-WAVE_FRAMES:]
-                dt = recent[-1][2] - recent[0][2]
-                if dt > 0:
-                    cum = sum(abs(recent[i][0]-recent[i-1][0]) for i in range(1,len(recent)))
-                    result["palm_speed"] = round(cum/dt, 3)
+            result["palm_speed"] = round(palm_speed_norm, 3)
             result["confidence"] = 0.8
 
         return result
 
-    def _log_frame(self, curls, fist_raw, fist_ema, pinch_raw, pinch_norm,
-                   raw_g, voted_g, final_g, result):
-        """Print detailed debug info every frame."""
-        curl_str = " ".join(f"{k[0].upper()}:{v:.2f}" for k, v in curls.items())
-        other_avg = (curls['middle'] + curls['ring'] + curls['pinky']) / 3.0
-        print(
-            f"[F{self.frame_count:04d}] "
-            f"curls=[{curl_str}] "
-            f"fist={fist_raw:.3f}->{fist_ema:.3f} "
-            f"pinch_d={pinch_raw:.4f} pinch_n={pinch_norm:.3f} "
-            f"other_avg={other_avg:.3f} | "
-            f"raw={raw_g} vote={voted_g} final={final_g} "
-            f"conf={result.get('confidence', 0):.2f}"
-        )
+    def reset(self):
+        self.pos_history.clear()
+        self.history.append("none")
+        if len(self.history) >= 3:
+            recent = list(self.history)[-3:]
+            if recent.count("none") >= 2:
+                self.state = "none"
+        self.ema_fist = None
+        self.ema_pinch_dist = None
+        self.ema_rot_x = None
+        self.ema_rot_y = None
+        self.ema_palm_speed = None
+        self.fist_confirm_count = 0
+        self.pinch_confirm_count = 0
+        self.wave_confirm_count = 0
+        self.frame_count += 1
+
+
+# ============================================================
+# Dual-hand coordination
+# ============================================================
+class DualHandTracker:
+    def __init__(self):
+        self.left_gsm = GestureStateMachine("Left")
+        self.right_gsm = GestureStateMachine("Right")
+        self.single_gsm = GestureStateMachine("Single")
+        self.proximity_start = None
+        self.last_left_palm = None
+        self.last_right_palm = None
+        self.frame_count = 0
+        self._last_status_log = 0
+
+    def process(self, results):
+        self.frame_count += 1
+        now = time.time()
+
+        if not results.hand_landmarks or len(results.hand_landmarks) == 0:
+            self.left_gsm.reset()
+            self.right_gsm.reset()
+            self.single_gsm.reset()
+            self.proximity_start = None
+
+            if now - self._last_status_log > 2.0:
+                self._last_status_log = now
+                log("TRACK", "No hands detected")
+
+            return {
+                "type": "no_hand",
+                "left": None,
+                "right": None,
+                "dual": None,
+                "frame_id": self.frame_count,
+                "hand_count": 0,
+            }
+
+        # Classify hands
+        left_landmarks = None
+        right_landmarks = None
+        left_conf = 0
+        right_conf = 0
+
+        for i, hand_lm in enumerate(results.hand_landmarks):
+            if i >= len(results.handedness):
+                continue
+            handedness = results.handedness[i][0]
+            label = handedness.category_name
+            conf = handedness.score
+
+            if conf < MIN_HAND_CONFIDENCE:
+                log("TRACK", f"Hand {i} rejected: conf={conf:.3f} < {MIN_HAND_CONFIDENCE}")
+                continue
+
+            if label == "Right":
+                if conf > right_conf:
+                    right_landmarks = hand_lm
+                    right_conf = conf
+            else:
+                if conf > left_conf:
+                    left_landmarks = hand_lm
+                    left_conf = conf
+
+        hand_count = (1 if left_landmarks else 0) + (1 if right_landmarks else 0)
+
+        # === SINGLE HAND MODE ===
+        # If only one hand detected, use single_gsm for full control (backward compat)
+        if hand_count == 1:
+            single_lm = left_landmarks if left_landmarks else right_landmarks
+            single_conf = left_conf if left_landmarks else right_conf
+            single_label = "Left" if left_landmarks else "Right"
+
+            single_data = self.single_gsm.update(single_lm)
+            single_data["hand_confidence"] = round(single_conf, 3)
+            single_data["landmarks"] = [
+                {"x": round(lm.x, 4), "y": round(lm.y, 4), "z": round(lm.z, 4)}
+                for lm in single_lm
+            ]
+
+            # Also populate the correct side for UI display
+            left_data = single_data if left_landmarks else None
+            right_data = single_data if right_landmarks else None
+
+            if now - self._last_status_log > 1.0:
+                self._last_status_log = now
+                log("TRACK", f"Single hand: {single_label} gesture={single_data['gesture']} "
+                    f"conf={single_conf:.2f} digit={single_data['digit']}")
+
+            return {
+                "type": "single",
+                "left": left_data,
+                "right": right_data,
+                "dual": None,
+                "frame_id": self.frame_count,
+                "hand_count": 1,
+                "single_hand": single_label,
+            }
+
+        # === DUAL HAND MODE ===
+        left_data = None
+        right_data = None
+
+        if left_landmarks:
+            left_data = self.left_gsm.update(left_landmarks)
+            left_data["hand_confidence"] = round(left_conf, 3)
+            pcx, pcy, pcz = palm_center(left_landmarks)
+            self.last_left_palm = (pcx, pcy, pcz)
+            left_data["landmarks"] = [
+                {"x": round(lm.x, 4), "y": round(lm.y, 4), "z": round(lm.z, 4)}
+                for lm in left_landmarks
+            ]
+
+        if right_landmarks:
+            right_data = self.right_gsm.update(right_landmarks)
+            right_data["hand_confidence"] = round(right_conf, 3)
+            pcx, pcy, pcz = palm_center(right_landmarks)
+            self.last_right_palm = (pcx, pcy, pcz)
+            right_data["landmarks"] = [
+                {"x": round(lm.x, 4), "y": round(lm.y, 4), "z": round(lm.z, 4)}
+                for lm in right_landmarks
+            ]
+
+        dual_data = self._compute_dual(left_landmarks, right_landmarks, now)
+
+        if now - self._last_status_log > 1.0:
+            self._last_status_log = now
+            lg = left_data['gesture'] if left_data else 'N/A'
+            rg = right_data['gesture'] if right_data else 'N/A'
+            pd = dual_data['palm_distance'] if dual_data else 0
+            log("TRACK", f"Dual hands: L={lg} R={rg} palm_dist={pd:.3f}")
+
+        return {
+            "type": "dual",
+            "left": left_data,
+            "right": right_data,
+            "dual": dual_data,
+            "frame_id": self.frame_count,
+            "hand_count": 2,
+        }
+
+    def _compute_dual(self, left_lm, right_lm, now):
+        left_palm = palm_center(left_lm)
+        right_palm = palm_center(right_lm)
+
+        dx = left_palm[0] - right_palm[0]
+        dy = left_palm[1] - right_palm[1]
+        palm_dist = math.sqrt(dx*dx + dy*dy)
+
+        reset_triggered = False
+        if palm_dist < PROXIMITY_THRESHOLD:
+            if self.proximity_start is None:
+                self.proximity_start = now
+                log("DUAL", f"Proximity detected: dist={palm_dist:.3f} < {PROXIMITY_THRESHOLD}")
+            elif now - self.proximity_start >= PROXIMITY_HOLD_TIME:
+                reset_triggered = True
+                self.proximity_start = None
+                log("DUAL", "RESET TRIGGERED!")
+        else:
+            self.proximity_start = None
+
+        left_gesture = self.left_gsm.state
+        right_gesture = self.right_gsm.state
+        dual_pointing_zoom = False
+        pointing_distance = None
+        if left_gesture == "pointing" and right_gesture == "pointing":
+            dual_pointing_zoom = True
+            left_index = left_lm[8]
+            right_index = right_lm[8]
+            pointing_distance = dist3_xy(left_index, right_index)
+
+        proximity_progress = 0.0
+        if self.proximity_start is not None:
+            proximity_progress = min(1.0, (now - self.proximity_start) / PROXIMITY_HOLD_TIME)
+
+        return {
+            "palm_distance": round(palm_dist, 4),
+            "reset_triggered": reset_triggered,
+            "proximity_progress": round(proximity_progress, 3),
+            "dual_pointing_zoom": dual_pointing_zoom,
+            "pointing_distance": round(pointing_distance, 4) if pointing_distance else None,
+        }
 
 
 # ============================================================
 # FastAPI endpoints
 # ============================================================
-app.mount("/static", StaticFiles(directory="static"), name="static")
+static_dir = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
 @app.get("/")
 async def root():
-    return FileResponse("static/index.html")
+    return FileResponse(str(static_dir / "index.html"))
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("[WS] Client connected")
+    log("WS", "Client connected")
 
-    gsm = GestureStateMachine()
-    palm_trail = deque(maxlen=15)
+    tracker = DualHandTracker()
+    frame_times = deque(maxlen=30)
 
     try:
         while True:
@@ -378,85 +759,92 @@ async def websocket_endpoint(websocket: WebSocket):
             msg = json.loads(data)
 
             if msg.get("type") == "frame":
-                img_data = base64.b64decode(msg["data"].split(",")[1])
+                t0 = time.time()
+
+                raw = msg.get("data", "")
+                if "," not in raw:
+                    continue
+                img_data = base64.b64decode(raw.split(",")[1])
                 np_arr = np.frombuffer(img_data, np.uint8)
                 frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
                 if frame is None:
+                    log("WS", "Failed to decode frame")
                     await websocket.send_json({
-                        "gesture": "none", "palm": None,
-                        "trail": [], "confidence": 0.0, "fist_strength": 0.0
+                        "type": "no_hand",
+                        "left": None, "right": None, "dual": None,
+                        "frame_id": tracker.frame_count, "hand_count": 0,
                     })
                     continue
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-                results = hand_landmarker.detect(mp_image)
 
-                if results.hand_landmarks and len(results.hand_landmarks) > 0:
-                    # Filter by handedness confidence
-                    if results.handedness and len(results.handedness) > 0:
-                        hand_conf = results.handedness[0][0].score
-                        if hand_conf < MIN_HAND_CONFIDENCE:
-                            print(f"[F{gsm.frame_count+1:04d}] LOW CONFIDENCE hand={hand_conf:.3f}, skipping")
-                            await websocket.send_json({
-                                "gesture": gsm.state,
-                                "palm": None, "trail": [],
-                                "confidence": 0.0, "fist_strength": 0.0,
-                                "frame_id": gsm.frame_count
-                            })
-                            continue
-
-                    landmarks = results.hand_landmarks[0]
-                    now = time.time()
-
-                    # Update palm trail
-                    pcx = (landmarks[0].x + landmarks[5].x + landmarks[17].x) / 3
-                    pcy = (landmarks[0].y + landmarks[5].y + landmarks[17].y) / 3
-                    pcz = (landmarks[0].z + landmarks[5].z + landmarks[17].z) / 3
-                    palm_trail.append({"x": round(pcx,4), "y": round(pcy,4), "z": round(pcz,4), "t": now})
-                    trail_points = [p for p in palm_trail if now - p["t"] < 0.5]
-
-                    # Run state machine
-                    gesture_data = gsm.update(landmarks)
-                    gesture_data["trail"] = trail_points
-
-                    # Send landmarks for hand overlay
-                    gesture_data["landmarks"] = [
-                        {"x": round(lm.x,4), "y": round(lm.y,4), "z": round(lm.z,4)}
-                        for lm in landmarks
-                    ]
-
-                    await websocket.send_json(gesture_data)
-                else:
-                    # No hand detected - reset state machine smoothly
-                    gsm.pos_history.clear()
-                    gsm.history.append("none")
-                    if len(gsm.history) >= 3:
-                        # Only transition to none after majority says so
-                        recent = list(gsm.history)[-3:]
-                        if recent.count("none") >= 2:
-                            gsm.state = "none"
-                    gsm.ema_fist = None
-                    gsm.ema_pinch_dist = None
-                    gsm.ema_rot_x = None
-                    gsm.ema_rot_y = None
-                    gsm.frame_count += 1
+                try:
+                    results = hand_landmarker.detect(mp_image)
+                except Exception as e:
+                    log("MP", f"Detection error: {e}")
                     await websocket.send_json({
-                        "gesture": gsm.state,
-                        "palm": None, "trail": [],
-                        "confidence": 0.0, "fist_strength": 0.0,
-                        "frame_id": gsm.frame_count
+                        "type": "no_hand",
+                        "left": None, "right": None, "dual": None,
+                        "frame_id": tracker.frame_count, "hand_count": 0,
                     })
+                    continue
+
+                response = tracker.process(results)
+
+                t1 = time.time()
+                frame_times.append(t1 - t0)
+
+                # Log processing FPS every 30 frames
+                if len(frame_times) == 30:
+                    avg_ms = (sum(frame_times) / len(frame_times)) * 1000
+                    fps = 1000.0 / avg_ms if avg_ms > 0 else 0
+                    log("PERF", f"avg={avg_ms:.1f}ms/frame  capacity={fps:.0f}fps")
+
+                await websocket.send_json(response)
 
     except WebSocketDisconnect:
-        print("[WS] Client disconnected")
+        log("WS", "Client disconnected")
     except Exception as e:
-        print(f"[WS] Error: {e}")
-        import traceback
+        log("WS", f"Error: {e}")
         traceback.print_exc()
+
+
+# ============================================================
+# Port scanning and startup
+# ============================================================
+def find_available_port(start=8000, end=8100):
+    """Scan for an available port in range."""
+    for port in range(start, end):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("0.0.0.0", port))
+                return port
+            except OSError:
+                continue
+    return None
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    log("STARTUP", "=" * 60)
+    log("STARTUP", "Magic Gesture 3D Controller - Dual Hand")
+    log("STARTUP", "=" * 60)
+
+    port = find_available_port(8000, 8100)
+    if port is None:
+        log("ERROR", "No available port found in range 8000-8100!")
+        sys.exit(1)
+
+    if port != 8000:
+        log("STARTUP", f"Port 8000 is occupied, using port {port} instead")
+
+    log("STARTUP", f"Server starting on http://0.0.0.0:{port}")
+    log("STARTUP", f"Open in browser: http://localhost:{port}")
+    log("STARTUP", f"Working directory: {Path.cwd()}")
+    log("STARTUP", f"Static files: {static_dir.resolve()}")
+    log("STARTUP", "=" * 60)
+
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

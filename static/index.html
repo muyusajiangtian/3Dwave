@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Magic Gesture 3D Controller</title>
+    <title>Magic Gesture 3D Controller - Dual Hand</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -43,34 +43,65 @@
         }
         #canvas-overlay {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
             transform: scaleX(-1);
             pointer-events: none;
         }
         #gesture-info {
-            margin-top: 20px;
-            padding: 12px 24px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            margin-top: 15px;
+            width: 90%;
+            max-width: 480px;
+            display: flex;
+            gap: 10px;
+        }
+        .hand-info {
+            flex: 1;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 8px;
-            font-size: 14px;
-            text-align: center;
-            min-width: 200px;
-        }
-        #gesture-name {
-            font-size: 22px;
-            font-weight: bold;
-            background: linear-gradient(135deg, #667eea, #764ba2);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 4px;
-        }
-        #gesture-params {
-            color: #888;
             font-size: 12px;
+        }
+        .hand-info.left-hand { border-left: 3px solid #4facfe; }
+        .hand-info.right-hand { border-left: 3px solid #f093fb; }
+        .hand-label {
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .hand-gesture {
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 2px;
+        }
+        .left-hand .hand-gesture { color: #4facfe; }
+        .right-hand .hand-gesture { color: #f093fb; }
+        .hand-confidence {
+            font-size: 10px;
+            color: #666;
+        }
+        .hand-digit {
+            font-size: 20px;
+            font-weight: bold;
+            margin-top: 4px;
+        }
+        .left-hand .hand-digit { color: #43e97b; }
+        .right-hand .hand-digit { color: #fee140; }
+        #dual-status {
+            margin-top: 8px;
+            padding: 6px 14px;
+            background: rgba(255, 200, 50, 0.08);
+            border: 1px solid rgba(255, 200, 50, 0.2);
+            border-radius: 6px;
+            font-size: 11px;
+            color: #fda;
+            text-align: center;
+            width: 90%;
+            max-width: 480px;
+            display: none;
         }
         #three-panel {
             width: 65%;
@@ -78,14 +109,12 @@
             position: relative;
         }
         #three-canvas {
-            width: 100%;
-            height: 100%;
+            width: 100%; height: 100%;
             display: block;
         }
         #fps-counter {
             position: absolute;
-            top: 10px;
-            right: 15px;
+            top: 10px; right: 15px;
             font-size: 12px;
             color: #4f4;
             background: rgba(0,0,0,0.6);
@@ -95,8 +124,7 @@
         }
         #status {
             position: absolute;
-            top: 10px;
-            left: 15px;
+            top: 10px; left: 15px;
             font-size: 12px;
             padding: 4px 8px;
             border-radius: 4px;
@@ -107,9 +135,7 @@
         .disconnected { color: #f44; }
         #title-bar {
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
+            top: 0; left: 0; right: 0;
             padding: 12px 20px;
             background: linear-gradient(180deg, rgba(10,10,15,0.9), transparent);
             z-index: 10;
@@ -124,8 +150,7 @@
         }
         #error-display {
             position: absolute;
-            bottom: 20px;
-            left: 50%;
+            bottom: 20px; left: 50%;
             transform: translateX(-50%);
             background: rgba(255, 50, 50, 0.2);
             border: 1px solid rgba(255, 50, 50, 0.4);
@@ -136,36 +161,47 @@
             display: none;
             z-index: 20;
         }
-        #debug-panel {
+        #reset-indicator {
             position: absolute;
-            bottom: 15px;
-            left: 15px;
-            background: rgba(0, 0, 0, 0.8);
-            border: 1px solid rgba(102, 126, 234, 0.3);
-            border-radius: 8px;
-            padding: 10px 14px;
-            font-size: 11px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            z-index: 15;
-            min-width: 220px;
-            color: #ccc;
-            line-height: 1.6;
-        }
-        #debug-panel .debug-title {
-            color: #667eea;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 24px;
             font-weight: bold;
-            font-size: 12px;
-            margin-bottom: 4px;
-            border-bottom: 1px solid rgba(102, 126, 234, 0.2);
-            padding-bottom: 3px;
+            color: #fff;
+            background: rgba(0,0,0,0.7);
+            padding: 20px 40px;
+            border-radius: 12px;
+            border: 2px solid #4facfe;
+            display: none;
+            z-index: 30;
+            animation: pulse-border 0.5s ease-in-out;
         }
-        .debug-gesture { color: #f093fb; font-size: 13px; font-weight: bold; }
-        .debug-confidence { color: #4facfe; }
-        .debug-metric { color: #43e97b; }
+        @keyframes pulse-border {
+            0%, 100% { border-color: #4facfe; }
+            50% { border-color: #f093fb; }
+        }
+        #proximity-bar {
+            position: absolute;
+            bottom: 60px; left: 50%;
+            transform: translateX(-50%);
+            width: 200px; height: 6px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 3px;
+            overflow: hidden;
+            display: none;
+            z-index: 15;
+        }
+        #proximity-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #4facfe, #f093fb);
+            border-radius: 3px;
+            transition: width 0.1s;
+        }
     </style>
 </head>
 <body>
-    <div id="title-bar"><h1>Magic Gesture 3D Controller</h1></div>
+    <div id="title-bar"><h1>Magic Gesture 3D Controller - Dual Hand</h1></div>
     <div id="container">
         <div id="video-panel">
             <div id="video-wrapper">
@@ -173,24 +209,27 @@
                 <canvas id="canvas-overlay"></canvas>
             </div>
             <div id="gesture-info">
-                <div id="gesture-name">等待手势...</div>
-                <div id="gesture-params"></div>
+                <div class="hand-info left-hand">
+                    <div class="hand-label">LEFT HAND</div>
+                    <div class="hand-gesture" id="left-gesture">--</div>
+                    <div class="hand-confidence" id="left-conf">conf: --</div>
+                    <div class="hand-digit" id="left-digit"></div>
+                </div>
+                <div class="hand-info right-hand">
+                    <div class="hand-label">RIGHT HAND</div>
+                    <div class="hand-gesture" id="right-gesture">--</div>
+                    <div class="hand-confidence" id="right-conf">conf: --</div>
+                    <div class="hand-digit" id="right-digit"></div>
+                </div>
             </div>
+            <div id="dual-status"></div>
         </div>
         <div id="three-panel">
             <canvas id="three-canvas"></canvas>
             <div id="fps-counter">FPS: --</div>
-            <div id="status" class="disconnected">● 断开</div>
-            <div id="debug-panel">
-                <div class="debug-title">Debug Panel</div>
-                <div>Gesture: <span id="dbg-gesture" class="debug-gesture">none</span></div>
-                <div>Confidence: <span id="dbg-conf" class="debug-confidence">0.00</span></div>
-                <div>Fist Str: <span id="dbg-fist" class="debug-metric">0.000</span></div>
-                <div>Pinch: <span id="dbg-pinch" class="debug-metric">d=0.000 n=0.000</span></div>
-                <div>Curls: <span id="dbg-curls" class="debug-metric">T:0 I:0 M:0 R:0 P:0</span></div>
-                <div>Speed: <span id="dbg-speed" class="debug-metric">0.000</span></div>
-                <div>Frame: <span id="dbg-frame" class="debug-metric">0</span></div>
-            </div>
+            <div id="status" class="disconnected">● Disconnected</div>
+            <div id="reset-indicator">RESET</div>
+            <div id="proximity-bar"><div id="proximity-fill"></div></div>
             <div id="error-display"></div>
         </div>
     </div>
@@ -200,18 +239,9 @@
     <script>
     window.addEventListener('DOMContentLoaded', function() {
         if (typeof THREE === 'undefined') {
-            document.getElementById('error-display').textContent = 'Three.js 加载失败';
+            document.getElementById('error-display').textContent = 'Three.js failed to load';
             document.getElementById('error-display').style.display = 'block';
             return;
-        }
-
-        // === Logging ===
-        var LOG_BUFFER = [];
-        function log(tag, msg) {
-            var entry = '[' + performance.now().toFixed(0) + '][' + tag + '] ' + msg;
-            if (LOG_BUFFER.length > 150) LOG_BUFFER.shift();
-            LOG_BUFFER.push(entry);
-            console.log(entry);
         }
 
         // === Audio ===
@@ -235,6 +265,23 @@
                 osc.start(); osc.stop(t + d);
             } catch (e) {}
         }
+        function playExplosion() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                var d = 0.5, t = audioCtx.currentTime;
+                var noise = audioCtx.createBufferSource();
+                var buf = audioCtx.createBuffer(1, audioCtx.sampleRate * d, audioCtx.sampleRate);
+                var data = buf.getChannelData(0);
+                for (var i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (audioCtx.sampleRate * 0.1));
+                noise.buffer = buf;
+                var gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0.4, t);
+                gain.gain.exponentialRampToValueAtTime(0.001, t + d);
+                noise.connect(gain); gain.connect(audioCtx.destination);
+                noise.start(); noise.stop(t + d);
+            } catch (e) {}
+        }
 
         // === WebSocket ===
         var ws = null, wsReady = false;
@@ -242,10 +289,10 @@
         function connectWS() {
             try {
                 ws = new WebSocket('ws://' + location.host + '/ws');
-                ws.onopen = function() { wsReady = true; statusEl.textContent = '● 已连接'; statusEl.className = 'connected'; log('WS','Connected'); };
-                ws.onclose = function() { wsReady = false; statusEl.textContent = '● 断开'; statusEl.className = 'disconnected'; setTimeout(connectWS, 2000); };
+                ws.onopen = function() { wsReady = true; statusEl.textContent = '● Connected'; statusEl.className = 'connected'; };
+                ws.onclose = function() { wsReady = false; statusEl.textContent = '● Disconnected'; statusEl.className = 'disconnected'; setTimeout(connectWS, 2000); };
                 ws.onerror = function() { ws.close(); };
-                ws.onmessage = function(ev) { try { handleGesture(JSON.parse(ev.data)); } catch(e) {} };
+                ws.onmessage = function(ev) { try { handleMessage(JSON.parse(ev.data)); } catch(e) {} };
             } catch(e) { setTimeout(connectWS, 3000); }
         }
         connectWS();
@@ -266,14 +313,13 @@
                 overlay.width = video.videoWidth;
                 overlay.height = video.videoHeight;
                 startSending();
-                log('CAM', 'Started ' + video.videoWidth + 'x' + video.videoHeight);
             };
         }).catch(function(err) {
-            document.getElementById('gesture-name').textContent = '摄像头不可用';
+            document.getElementById('left-gesture').textContent = 'No Camera';
         });
 
         var lastSendTime = 0;
-        var SEND_INTERVAL = 55; // ~18fps send rate to avoid overloading server
+        var SEND_INTERVAL = 55;
         function startSending() {
             function tick() {
                 requestAnimationFrame(tick);
@@ -286,105 +332,235 @@
             tick();
         }
 
-        // === Debug Panel (cached DOM refs) ===
-        var dbgGesture = document.getElementById('dbg-gesture');
-        var dbgConf = document.getElementById('dbg-conf');
-        var dbgFist = document.getElementById('dbg-fist');
-        var dbgPinch = document.getElementById('dbg-pinch');
-        var dbgCurls = document.getElementById('dbg-curls');
-        var dbgSpeed = document.getElementById('dbg-speed');
-        var dbgFrame = document.getElementById('dbg-frame');
-        var lastDebugUpdate = 0;
+        // === UI Elements ===
+        var leftGestureEl = document.getElementById('left-gesture');
+        var leftConfEl = document.getElementById('left-conf');
+        var leftDigitEl = document.getElementById('left-digit');
+        var rightGestureEl = document.getElementById('right-gesture');
+        var rightConfEl = document.getElementById('right-conf');
+        var rightDigitEl = document.getElementById('right-digit');
+        var dualStatusEl = document.getElementById('dual-status');
+        var resetIndicator = document.getElementById('reset-indicator');
+        var proximityBar = document.getElementById('proximity-bar');
+        var proximityFill = document.getElementById('proximity-fill');
 
-        function updateDebugPanel(data) {
-            // Throttle DOM updates to 10fps to reduce reflow
-            var now = performance.now();
-            if (now - lastDebugUpdate < 100) return;
-            lastDebugUpdate = now;
-            dbgGesture.textContent = data.gesture || 'none';
-            dbgConf.textContent = (data.confidence || 0).toFixed(3);
-            dbgFist.textContent = (data.fist_strength || 0).toFixed(3);
-            var pd = (data.pinch_distance || 0).toFixed(3);
-            var pn = (data.pinch_normalized || 0).toFixed(3);
-            dbgPinch.textContent = 'd=' + pd + ' n=' + pn;
-            if (data.curls) {
-                var c = data.curls;
-                dbgCurls.textContent = 'T:' + (c.thumb||0).toFixed(2) + ' I:' + (c.index||0).toFixed(2) +
-                    ' M:' + (c.middle||0).toFixed(2) + ' R:' + (c.ring||0).toFixed(2) + ' P:' + (c.pinky||0).toFixed(2);
-            }
-            dbgSpeed.textContent = (data.palm_speed || 0).toFixed(3);
-            dbgFrame.textContent = data.frame_id || 0;
+        var GESTURE_ICONS = {
+            'none': '--',
+            'fist': '✊ Fist',
+            'pinch': '🤏 Pinch',
+            'wave': '👋 Wave',
+            'pointing': '☝️ Point',
+        };
+
+        function formatFingers(f) {
+            if (!f) return '';
+            var s = '';
+            s += f.thumb ? '👍' : '·';
+            s += f.index ? '☝' : '·';
+            s += f.middle ? '|' : '·';
+            s += f.ring ? '|' : '·';
+            s += f.pinky ? '|' : '·';
+            return s;
         }
 
         // === Gesture State ===
-        var currentGesture = 'none';
-        var targetRotX = 0, targetRotY = 0, targetScale = 1;
-        var targetFistStrength = 0, targetPinchIntensity = 0;
-        var currentFistStrength = 0, currentPinchIntensity = 0;
-        var lastWaveTime = 0, colorIndex = 0;
+        var currentLeftGesture = 'none';
+        var currentRightGesture = 'none';
+        var targetRotY = 0; // left fist: horizontal rotation
+        var targetRotX = 0; // right fist: vertical flip
+        var targetScale = 1;
+        var lastLeftWaveTime = 0, lastRightWaveTime = 0;
+        var colorIndex = 0;
         var COLORS = [0x667eea, 0xf093fb, 0x4facfe, 0x43e97b, 0xfa709a, 0xfee140];
-        var trailPoints = [];
+        var initialScale = 1;
+        var dualPointingBaseDistance = null;
 
-        var GESTURE_NAMES = {
-            'none': '等待手势...',
-            'fist': '✊ 握拳 - 旋转+光环',
-            'pinch': '🤏 捏合 - 粒子波',
-            'wave': '👋 挥手 - 变色',
-        };
+        var isSingleHandMode = false;
 
-        function handleGesture(data) {
-            currentGesture = data.gesture;
-            document.getElementById('gesture-name').textContent = GESTURE_NAMES[data.gesture] || '等待手势...';
-            updateDebugPanel(data);
+        function handleMessage(data) {
+            if (data.type === 'no_hand') {
+                leftGestureEl.textContent = '--';
+                rightGestureEl.textContent = '--';
+                leftConfEl.textContent = 'conf: --';
+                rightConfEl.textContent = 'conf: --';
+                leftDigitEl.textContent = '';
+                rightDigitEl.textContent = '';
+                dualStatusEl.style.display = 'none';
+                proximityBar.style.display = 'none';
+                currentLeftGesture = 'none';
+                currentRightGesture = 'none';
+                isSingleHandMode = false;
+                overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+                return;
+            }
 
-            if (data.gesture === 'fist') {
-                targetRotX = data.rotation_y || 0;
-                targetRotY = data.rotation_x || 0;
-                targetFistStrength = data.fist_strength || 0;
-                targetPinchIntensity = 0;
-                document.getElementById('gesture-params').textContent =
-                    '力度:' + (data.fist_strength||0).toFixed(2) + ' 旋转:(' + (data.rotation_x||0).toFixed(1) + ',' + (data.rotation_y||0).toFixed(1) + ')';
-            } else if (data.gesture === 'pinch') {
-                targetScale = data.scale || 1;
-                targetPinchIntensity = data.pinch_intensity || 0;
-                targetFistStrength = 0;
-                document.getElementById('gesture-params').textContent =
-                    '强度:' + (data.pinch_intensity||0).toFixed(2) + ' 缩放:' + (data.scale||1).toFixed(2) + 'x';
-            } else if (data.gesture === 'wave') {
-                targetFistStrength = 0;
-                targetPinchIntensity = 0;
+            isSingleHandMode = (data.type === 'single');
+
+            // Update left hand UI
+            if (data.left) {
+                currentLeftGesture = data.left.gesture;
+                leftGestureEl.textContent = GESTURE_ICONS[data.left.gesture] || data.left.gesture;
+                var lconf = (data.left.confidence || 0).toFixed(2);
+                var lhconf = (data.left.hand_confidence || 0).toFixed(2);
+                var lspeed = (data.left.palm_speed || 0).toFixed(2);
+                leftConfEl.textContent = 'conf:' + lconf + ' hand:' + lhconf + ' spd:' + lspeed;
+                if (data.left.digit !== undefined) {
+                    var fstr = data.left.fingers ? formatFingers(data.left.fingers) : '';
+                    leftDigitEl.textContent = '🔢 ' + data.left.digit + ' ' + fstr;
+                } else {
+                    leftDigitEl.textContent = '';
+                }
+            } else {
+                leftGestureEl.textContent = '--';
+                leftConfEl.textContent = 'conf: --';
+                leftDigitEl.textContent = '';
+                currentLeftGesture = 'none';
+            }
+
+            // Update right hand UI
+            if (data.right) {
+                currentRightGesture = data.right.gesture;
+                rightGestureEl.textContent = GESTURE_ICONS[data.right.gesture] || data.right.gesture;
+                var rconf = (data.right.confidence || 0).toFixed(2);
+                var rhconf = (data.right.hand_confidence || 0).toFixed(2);
+                var rspeed = (data.right.palm_speed || 0).toFixed(2);
+                rightConfEl.textContent = 'conf:' + rconf + ' hand:' + rhconf + ' spd:' + rspeed;
+                if (data.right.digit !== undefined) {
+                    var fstr2 = data.right.fingers ? formatFingers(data.right.fingers) : '';
+                    rightDigitEl.textContent = '🔢 ' + data.right.digit + ' ' + fstr2;
+                } else {
+                    rightDigitEl.textContent = '';
+                }
+            } else {
+                rightGestureEl.textContent = '--';
+                rightConfEl.textContent = 'conf: --';
+                rightDigitEl.textContent = '';
+                currentRightGesture = 'none';
+            }
+
+            // Process gestures based on mode
+            if (isSingleHandMode) {
+                var singleData = data.left || data.right;
+                if (singleData) processSingleHand(singleData);
+                dualStatusEl.style.display = 'block';
+                dualStatusEl.textContent = '✋ Single Hand: ' + (data.single_hand || '?');
+                proximityBar.style.display = 'none';
+            } else {
+                // Dual hand mode
+                if (data.left) processLeftHand(data.left);
+                if (data.right) processRightHand(data.right);
+
+                if (data.dual) {
+                    processDual(data.dual);
+                    dualStatusEl.style.display = 'block';
+
+                    if (data.dual.dual_pointing_zoom) {
+                        dualStatusEl.textContent = '☝️☝️ Dual Point Zoom | dist: ' + (data.dual.pointing_distance || 0).toFixed(3);
+                    } else if (data.dual.proximity_progress > 0) {
+                        dualStatusEl.textContent = '🤝 Proximity Reset: ' + (data.dual.proximity_progress * 100).toFixed(0) + '%';
+                    } else {
+                        dualStatusEl.textContent = '👐 Dual Hand Active | dist: ' + (data.dual.palm_distance || 0).toFixed(3);
+                    }
+
+                    if (data.dual.proximity_progress > 0) {
+                        proximityBar.style.display = 'block';
+                        proximityFill.style.width = (data.dual.proximity_progress * 100) + '%';
+                    } else {
+                        proximityBar.style.display = 'none';
+                    }
+
+                    if (data.dual.reset_triggered) {
+                        triggerReset();
+                    }
+                } else {
+                    dualStatusEl.style.display = 'none';
+                    proximityBar.style.display = 'none';
+                    dualPointingBaseDistance = null;
+                }
+            }
+
+            // Draw hand overlay
+            drawHandOverlay(data.left, data.right);
+        }
+
+        // Single hand mode: fist = rotate both axes, pinch = scale, wave = color
+        function processSingleHand(hand) {
+            if (hand.gesture === 'fist') {
+                targetRotY = hand.rotation_x || 0;
+                targetRotX = hand.rotation_y || 0;
+            } else if (hand.gesture === 'pinch') {
+                targetScale = hand.scale || 1;
+            } else if (hand.gesture === 'wave') {
                 var now = Date.now();
-                if (now - lastWaveTime > 800) {
-                    lastWaveTime = now;
+                if (now - lastLeftWaveTime > 800) {
+                    lastLeftWaveTime = now;
                     colorIndex = (colorIndex + 1) % COLORS.length;
                     triggerColorChange();
                     playWhoosh();
-                    log('GESTURE', 'Wave color=' + colorIndex);
                 }
-                document.getElementById('gesture-params').textContent = '切换颜色!';
-            } else {
-                targetFistStrength = 0;
-                targetPinchIntensity = 0;
-                document.getElementById('gesture-params').textContent = '';
             }
-
-            if (data.trail && data.trail.length > 0) {
-                trailPoints = data.trail.map(function(p) {
-                    return { x: (p.x - 0.5) * 6, y: -(p.y - 0.5) * 4, z: p.z * 3 };
-                });
-            } else {
-                trailPoints = [];
-            }
-
-            if (data.landmarks) drawHandOverlay(data.landmarks);
         }
 
-        function drawHandOverlay(lm) {
+        function processLeftHand(hand) {
+            if (hand.gesture === 'fist') {
+                targetRotY = hand.rotation_x || 0;
+            } else if (hand.gesture === 'wave') {
+                var now = Date.now();
+                if (now - lastLeftWaveTime > 800) {
+                    lastLeftWaveTime = now;
+                    colorIndex = (colorIndex + 1) % COLORS.length;
+                    triggerColorChange();
+                    playWhoosh();
+                }
+            }
+        }
+
+        function processRightHand(hand) {
+            if (hand.gesture === 'fist') {
+                targetRotX = hand.rotation_y || 0;
+            } else if (hand.gesture === 'pinch') {
+                targetScale = hand.scale || 1;
+            } else if (hand.gesture === 'wave') {
+                var now = Date.now();
+                if (now - lastRightWaveTime > 800) {
+                    lastRightWaveTime = now;
+                    triggerExplosion();
+                    playExplosion();
+                }
+            }
+        }
+
+        function processDual(dual) {
+            if (dual.dual_pointing_zoom && dual.pointing_distance !== null) {
+                if (dualPointingBaseDistance === null) {
+                    dualPointingBaseDistance = dual.pointing_distance;
+                }
+                var ratio = dual.pointing_distance / dualPointingBaseDistance;
+                targetScale = Math.max(0.3, Math.min(3.0, ratio * initialScale));
+            } else {
+                if (dualPointingBaseDistance !== null) {
+                    initialScale = targetScale;
+                    dualPointingBaseDistance = null;
+                }
+            }
+        }
+
+        function drawHandOverlay(leftData, rightData) {
             overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
             var w = overlay.width, h = overlay.height;
             if (!w || !h) return;
             var conn = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
-            overlayCtx.strokeStyle = 'rgba(102,126,234,0.8)';
+
+            if (leftData && leftData.landmarks) {
+                drawSingleHand(leftData.landmarks, 'rgba(79,172,254,0.8)', '#4facfe', conn, w, h);
+            }
+            if (rightData && rightData.landmarks) {
+                drawSingleHand(rightData.landmarks, 'rgba(240,147,251,0.8)', '#f093fb', conn, w, h);
+            }
+        }
+
+        function drawSingleHand(lm, strokeColor, dotColor, conn, w, h) {
+            overlayCtx.strokeStyle = strokeColor;
             overlayCtx.lineWidth = 2;
             for (var i = 0; i < conn.length; i++) {
                 overlayCtx.beginPath();
@@ -395,7 +571,7 @@
             for (var j = 0; j < lm.length; j++) {
                 overlayCtx.beginPath();
                 overlayCtx.arc(lm[j].x*w, lm[j].y*h, 3, 0, 6.28);
-                overlayCtx.fillStyle = j===0 ? '#f093fb' : '#667eea';
+                overlayCtx.fillStyle = j === 0 ? '#fff' : dotColor;
                 overlayCtx.fill();
             }
         }
@@ -410,7 +586,6 @@
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.setSize(panelWidth, panelHeight);
         renderer.setClearColor(0x0a0a0f, 1);
-        renderer.outputColorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
 
         var scene = new THREE.Scene();
         scene.background = new THREE.Color(0x0a0a0f);
@@ -429,26 +604,19 @@
 
         // Torus Knot
         var torusKnot, torusMat, wireframe;
-        try {
-            var torusGeom = new THREE.TorusKnotGeometry(1.2, 0.35, 128, 32);
-            torusMat = new THREE.MeshStandardMaterial({ color: COLORS[0], emissive: COLORS[0], emissiveIntensity: 0.4, metalness: 0.3, roughness: 0.4, transparent: true, opacity: 0.9 });
-            torusKnot = new THREE.Mesh(torusGeom, torusMat);
-            scene.add(torusKnot);
-            wireframe = new THREE.Mesh(torusGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.08 }));
-            scene.add(wireframe);
-        } catch(e) {
-            torusMat = new THREE.MeshStandardMaterial({ color: COLORS[0], emissive: COLORS[0], emissiveIntensity: 0.5, metalness: 0.2, roughness: 0.5 });
-            torusKnot = new THREE.Mesh(new THREE.SphereGeometry(1.5, 32, 32), torusMat);
-            scene.add(torusKnot);
-            wireframe = torusKnot;
-        }
+        var torusGeom = new THREE.TorusKnotGeometry(1.2, 0.35, 128, 32);
+        torusMat = new THREE.MeshStandardMaterial({ color: COLORS[0], emissive: COLORS[0], emissiveIntensity: 0.4, metalness: 0.3, roughness: 0.4, transparent: true, opacity: 0.9 });
+        torusKnot = new THREE.Mesh(torusGeom, torusMat);
+        scene.add(torusKnot);
+        wireframe = new THREE.Mesh(torusGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.08 }));
+        scene.add(wireframe);
 
-        // Glow sphere
+        // Glow
         var glowMat = new THREE.MeshBasicMaterial({ color: COLORS[0], transparent: true, opacity: 0.05, side: THREE.BackSide });
         var glowMesh = new THREE.Mesh(new THREE.SphereGeometry(2.2, 32, 32), glowMat);
         scene.add(glowMesh);
 
-        // === ENERGY HALO (Fist) - Sprites, pre-allocated ===
+        // === ENERGY HALO (Fist) ===
         var HALO_COUNT = 3;
         var haloRings = [];
         var haloTexture = (function() {
@@ -473,7 +641,7 @@
             haloRings.push(hSprite);
         }
 
-        // === PARTICLE WAVE (Pinch) - pre-allocated pool ===
+        // === PARTICLE WAVE (Pinch) ===
         var WAVE_P_COUNT = 250;
         var waveGeom = new THREE.BufferGeometry();
         var wavePos = new Float32Array(WAVE_P_COUNT * 3);
@@ -488,7 +656,6 @@
         scene.add(new THREE.Points(waveGeom, waveMat));
 
         var lastWaveEmit = 0;
-        // Pre-allocated Color for wave particle emission (avoid new Color per particle)
         var _tmpWaveColor = new THREE.Color();
 
         function emitWaveParticles(intensity) {
@@ -506,6 +673,35 @@
                 _tmpWaveColor.setHSL((th/6.28 + intensity*0.3) % 1.0, 0.85, 0.6);
                 waveCol[i*3] = _tmpWaveColor.r; waveCol[i*3+1] = _tmpWaveColor.g; waveCol[i*3+2] = _tmpWaveColor.b;
                 emitted++;
+            }
+        }
+
+        // === EXPLOSION PARTICLES (Right wave) ===
+        var EXPLODE_COUNT = 400;
+        var explodeGeom = new THREE.BufferGeometry();
+        var explodePos = new Float32Array(EXPLODE_COUNT * 3);
+        var explodeCol = new Float32Array(EXPLODE_COUNT * 3);
+        var explodeVel = [];
+        var explodeLife = new Float32Array(EXPLODE_COUNT);
+        var explodeOn = new Uint8Array(EXPLODE_COUNT);
+        for (var ei = 0; ei < EXPLODE_COUNT; ei++) { explodeVel.push(new THREE.Vector3()); }
+        explodeGeom.setAttribute('position', new THREE.BufferAttribute(explodePos, 3));
+        explodeGeom.setAttribute('color', new THREE.BufferAttribute(explodeCol, 3));
+        var explodeMat = new THREE.PointsMaterial({ size: 0.15, vertexColors: true, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+        scene.add(new THREE.Points(explodeGeom, explodeMat));
+        var _tmpExplodeColor = new THREE.Color();
+
+        function triggerExplosion() {
+            for (var i = 0; i < EXPLODE_COUNT; i++) {
+                var th = Math.random() * 6.28;
+                var ph = Math.random() * 3.14;
+                var sp = 0.05 + Math.random() * 0.12;
+                explodePos[i*3] = 0; explodePos[i*3+1] = 0; explodePos[i*3+2] = 0;
+                explodeVel[i].set(Math.sin(ph)*Math.cos(th)*sp, Math.sin(ph)*Math.sin(th)*sp, Math.cos(ph)*sp);
+                explodeLife[i] = 0.8 + Math.random() * 0.4;
+                explodeOn[i] = 1;
+                _tmpExplodeColor.setHSL(Math.random(), 0.9, 0.6);
+                explodeCol[i*3] = _tmpExplodeColor.r; explodeCol[i*3+1] = _tmpExplodeColor.g; explodeCol[i*3+2] = _tmpExplodeColor.b;
             }
         }
 
@@ -529,22 +725,7 @@
         partGeom.setAttribute('color', new THREE.BufferAttribute(partCol, 3));
         scene.add(new THREE.Points(partGeom, new THREE.PointsMaterial({ size: 0.045, vertexColors: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true })));
 
-        // Hand Trail
-        var TRAIL_MAX = 40;
-        var trailGeom = new THREE.BufferGeometry();
-        var trailPos = new Float32Array(TRAIL_MAX*3);
-        var trailCol = new Float32Array(TRAIL_MAX*3);
-        trailGeom.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
-        trailGeom.setAttribute('color', new THREE.BufferAttribute(trailCol, 3));
-        trailGeom.setDrawRange(0, 0);
-        scene.add(new THREE.Points(trailGeom, new THREE.PointsMaterial({ size: 0.12, vertexColors: true, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true })));
-        var trailLineGeom = new THREE.BufferGeometry();
-        var trailLinePos = new Float32Array(TRAIL_MAX*3);
-        trailLineGeom.setAttribute('position', new THREE.BufferAttribute(trailLinePos, 3));
-        trailLineGeom.setDrawRange(0, 0);
-        scene.add(new THREE.Line(trailLineGeom, new THREE.LineBasicMaterial({ color: 0x667eea, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending })));
-
-        // Pulse rings (wave)
+        // Pulse rings (wave/color change)
         var pulseRings = [];
         function createPulseRing() {
             var rg = new THREE.RingGeometry(1.5, 1.8, 48);
@@ -555,7 +736,7 @@
             pulseRings.push(ring);
         }
 
-        // Color transition - PRE-ALLOCATED scratch colors
+        // Color transition
         var colorTransition = 0;
         var prevColor = new THREE.Color(COLORS[0]);
         var nextColor = new THREE.Color(COLORS[0]);
@@ -570,47 +751,64 @@
             glowMat.color.set(COLORS[colorIndex]);
         }
 
+        // Reset
+        function triggerReset() {
+            targetRotX = 0;
+            targetRotY = 0;
+            targetScale = 1;
+            initialScale = 1;
+            dualPointingBaseDistance = null;
+            resetIndicator.style.display = 'block';
+            setTimeout(function() { resetIndicator.style.display = 'none'; }, 1500);
+        }
+
         // === Animation Loop ===
         var frameCount = 0, lastFpsTime = performance.now();
         var fpsEl = document.getElementById('fps-counter');
         var smoothRotX = 0, smoothRotY = 0, smoothScale = 1;
+        var currentFistStrength = 0;
 
         function animate() {
             requestAnimationFrame(animate);
             var time = performance.now() * 0.001;
+            var now = performance.now();
 
             // FPS
             frameCount++;
-            var now = performance.now();
             if (now - lastFpsTime > 1000) {
                 fpsEl.textContent = 'FPS: ' + frameCount;
                 frameCount = 0;
                 lastFpsTime = now;
             }
 
-            // Smooth interpolation (no object allocation)
+            // Smooth interpolation
             smoothRotX += (targetRotX - smoothRotX) * 0.08;
             smoothRotY += (targetRotY - smoothRotY) * 0.08;
             smoothScale += (targetScale - smoothScale) * 0.08;
-            currentFistStrength += (targetFistStrength - currentFistStrength) * 0.1;
-            currentPinchIntensity += (targetPinchIntensity - currentPinchIntensity) * 0.1;
 
-            // --- FIST: Rotation + Halo (both active simultaneously) ---
-            if (currentGesture === 'fist') {
+            // Fist strength for halo (max of both hands)
+            var leftFist = (currentLeftGesture === 'fist') ? 0.8 : 0;
+            var rightFist = (currentRightGesture === 'fist') ? 0.8 : 0;
+            var targetFist = Math.max(leftFist, rightFist);
+            currentFistStrength += (targetFist - currentFistStrength) * 0.1;
+
+            // Rotation: dual-axis control or single-hand full control
+            var fistActive = (currentLeftGesture === 'fist' || currentRightGesture === 'fist');
+            if (fistActive) {
                 torusKnot.rotation.x = smoothRotX;
                 torusKnot.rotation.y = smoothRotY;
             } else {
                 torusKnot.rotation.x += 0.004;
                 torusKnot.rotation.y += 0.006;
             }
-            if (wireframe !== torusKnot) wireframe.rotation.copy(torusKnot.rotation);
+            wireframe.rotation.copy(torusKnot.rotation);
 
             // Scale
             torusKnot.scale.setScalar(smoothScale);
-            if (wireframe !== torusKnot) wireframe.scale.setScalar(smoothScale);
+            wireframe.scale.setScalar(smoothScale);
             glowMesh.scale.setScalar(smoothScale);
 
-            // Color transition (no allocation - reuse _lerpColor)
+            // Color transition
             if (colorTransition > 0) {
                 colorTransition -= 0.02;
                 if (colorTransition < 0) colorTransition = 0;
@@ -620,7 +818,7 @@
                 torusMat.emissiveIntensity = 0.4 + colorTransition * 0.6;
             }
 
-            // === ENERGY HALO (fist_strength driven, coexists with rotation) ===
+            // === ENERGY HALO ===
             for (var hi = 0; hi < HALO_COUNT; hi++) {
                 var halo = haloRings[hi];
                 var ud = halo.userData;
@@ -639,10 +837,11 @@
                 }
             }
 
-            // === PARTICLE WAVE (pinch driven) ===
-            if (currentGesture === 'pinch' && currentPinchIntensity > 0.1) {
+            // === PARTICLE WAVE (pinch) ===
+            var pinchActive = (currentRightGesture === 'pinch' || (isSingleHandMode && (currentLeftGesture === 'pinch' || currentRightGesture === 'pinch')));
+            if (pinchActive) {
                 if (now - lastWaveEmit > 90) {
-                    emitWaveParticles(currentPinchIntensity);
+                    emitWaveParticles(0.7);
                     lastWaveEmit = now;
                 }
             }
@@ -659,10 +858,6 @@
                     wavePos[wi*3+1] += waveVel[wi].y;
                     wavePos[wi*3+2] += waveVel[wi].z;
                     waveVel[wi].multiplyScalar(0.987);
-                    var f = waveLife[wi];
-                    waveCol[wi*3] *= (0.98 + f*0.02);
-                    waveCol[wi*3+1] *= (0.97 + f*0.03);
-                    waveCol[wi*3+2] *= (0.99 + f*0.01);
                 }
             }
             if (anyWave) {
@@ -670,7 +865,32 @@
                 waveGeom.attributes.color.needsUpdate = true;
             }
 
-            // === Ambient Particles (no per-frame Color allocation) ===
+            // === EXPLOSION PARTICLES ===
+            var anyExplode = false;
+            for (var ei = 0; ei < EXPLODE_COUNT; ei++) {
+                if (!explodeOn[ei]) continue;
+                anyExplode = true;
+                explodeLife[ei] -= 0.018;
+                if (explodeLife[ei] <= 0) {
+                    explodeOn[ei] = 0;
+                    explodePos[ei*3] = 0; explodePos[ei*3+1] = 0; explodePos[ei*3+2] = 0;
+                } else {
+                    explodePos[ei*3] += explodeVel[ei].x;
+                    explodePos[ei*3+1] += explodeVel[ei].y;
+                    explodePos[ei*3+2] += explodeVel[ei].z;
+                    explodeVel[ei].multiplyScalar(0.975);
+                    var fade = explodeLife[ei];
+                    explodeCol[ei*3] *= (0.98 + fade * 0.02);
+                    explodeCol[ei*3+1] *= (0.97 + fade * 0.03);
+                    explodeCol[ei*3+2] *= (0.96 + fade * 0.04);
+                }
+            }
+            if (anyExplode) {
+                explodeGeom.attributes.position.needsUpdate = true;
+                explodeGeom.attributes.color.needsUpdate = true;
+            }
+
+            // === Ambient Particles ===
             _currentColor.set(COLORS[colorIndex]);
             var pp = partGeom.attributes.position.array;
             var pc = partGeom.attributes.color.array;
@@ -686,17 +906,9 @@
                 pp[i*3] += partVel[i].x;
                 pp[i*3+1] += partVel[i].y;
                 pp[i*3+2] += partVel[i].z;
-                if (currentGesture === 'fist') {
-                    pp[i*3] += Math.sin(smoothRotY) * 0.006;
-                    pp[i*3+1] += Math.cos(smoothRotX) * 0.006;
-                }
                 var dx = pp[i*3], dy = pp[i*3+1], dz = pp[i*3+2];
                 var d = Math.sqrt(dx*dx+dy*dy+dz*dz);
                 if (d > 3.5) { var n = 1.3/d; pp[i*3]*=n; pp[i*3+1]*=n; pp[i*3+2]*=n; partLife[i]=1.0; }
-                if (currentGesture === 'pinch') {
-                    var pul = Math.sin(time*8)*0.006;
-                    pp[i*3]*=(1+pul); pp[i*3+1]*=(1+pul); pp[i*3+2]*=(1+pul);
-                }
                 var lf = 0.3 + partLife[i]*0.7;
                 pc[i*3] = _currentColor.r * lf;
                 pc[i*3+1] = _currentColor.g * lf;
@@ -704,29 +916,6 @@
             }
             partGeom.attributes.position.needsUpdate = true;
             partGeom.attributes.color.needsUpdate = true;
-
-            // Hand trail
-            if (trailPoints.length > 1) {
-                var cnt = Math.min(trailPoints.length, TRAIL_MAX);
-                var tp = trailGeom.attributes.position.array;
-                var tc = trailGeom.attributes.color.array;
-                var tlp = trailLineGeom.attributes.position.array;
-                for (var ti = 0; ti < cnt; ti++) {
-                    var pt = trailPoints[ti];
-                    tp[ti*3]=pt.x; tp[ti*3+1]=pt.y; tp[ti*3+2]=pt.z;
-                    tlp[ti*3]=pt.x; tlp[ti*3+1]=pt.y; tlp[ti*3+2]=pt.z;
-                    var tt = ti/cnt;
-                    tc[ti*3]=0.4+tt*0.6; tc[ti*3+1]=0.2+tt*0.5; tc[ti*3+2]=0.9;
-                }
-                trailGeom.setDrawRange(0, cnt);
-                trailGeom.attributes.position.needsUpdate = true;
-                trailGeom.attributes.color.needsUpdate = true;
-                trailLineGeom.setDrawRange(0, cnt);
-                trailLineGeom.attributes.position.needsUpdate = true;
-            } else {
-                trailGeom.setDrawRange(0, 0);
-                trailLineGeom.setDrawRange(0, 0);
-            }
 
             // Pulse rings
             for (var ri = pulseRings.length - 1; ri >= 0; ri--) {
@@ -745,7 +934,7 @@
             }
 
             // Emissive pulse on pinch
-            if (currentGesture === 'pinch') {
+            if (pinchActive) {
                 torusMat.emissiveIntensity = 0.4 + Math.sin(time*6)*0.3;
                 glowMat.opacity = 0.05 + Math.sin(time*6)*0.03;
             } else {
@@ -762,7 +951,6 @@
         }
 
         animate();
-        log('INIT', 'Render loop started');
 
         // Resize
         window.addEventListener('resize', function() {
@@ -773,7 +961,6 @@
             var w = threePanel.clientWidth, h = threePanel.clientHeight;
             if (w > 0 && h > 0) { renderer.setSize(w,h); camera.aspect=w/h; camera.updateProjectionMatrix(); }
         }, 100);
-
     });
     </script>
 </body>
