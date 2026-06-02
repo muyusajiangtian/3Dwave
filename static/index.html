@@ -136,6 +136,32 @@
             display: none;
             z-index: 20;
         }
+        #debug-panel {
+            position: absolute;
+            bottom: 15px;
+            left: 15px;
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 11px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            z-index: 15;
+            min-width: 220px;
+            color: #ccc;
+            line-height: 1.6;
+        }
+        #debug-panel .debug-title {
+            color: #667eea;
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 4px;
+            border-bottom: 1px solid rgba(102, 126, 234, 0.2);
+            padding-bottom: 3px;
+        }
+        .debug-gesture { color: #f093fb; font-size: 13px; font-weight: bold; }
+        .debug-confidence { color: #4facfe; }
+        .debug-metric { color: #43e97b; }
     </style>
 </head>
 <body>
@@ -155,6 +181,16 @@
             <canvas id="three-canvas"></canvas>
             <div id="fps-counter">FPS: --</div>
             <div id="status" class="disconnected">● 断开</div>
+            <div id="debug-panel">
+                <div class="debug-title">Debug Panel</div>
+                <div>Gesture: <span id="dbg-gesture" class="debug-gesture">none</span></div>
+                <div>Confidence: <span id="dbg-conf" class="debug-confidence">0.00</span></div>
+                <div>Fist Str: <span id="dbg-fist" class="debug-metric">0.000</span></div>
+                <div>Pinch: <span id="dbg-pinch" class="debug-metric">d=0.000 n=0.000</span></div>
+                <div>Curls: <span id="dbg-curls" class="debug-metric">T:0 I:0 M:0 R:0 P:0</span></div>
+                <div>Speed: <span id="dbg-speed" class="debug-metric">0.000</span></div>
+                <div>Frame: <span id="dbg-frame" class="debug-metric">0</span></div>
+            </div>
             <div id="error-display"></div>
         </div>
     </div>
@@ -163,110 +199,64 @@
     <script>if (typeof THREE === 'undefined') document.write('<script src="/static/three.min.js"><\/script>');</script>
     <script>
     window.addEventListener('DOMContentLoaded', function() {
-        // Verify Three.js loaded
         if (typeof THREE === 'undefined') {
-            document.getElementById('error-display').textContent = 'Three.js 加载失败，请检查网络连接';
+            document.getElementById('error-display').textContent = 'Three.js 加载失败';
             document.getElementById('error-display').style.display = 'block';
             return;
         }
 
-        // === Audio Setup ===
-        let audioCtx = null;
-        function getAudioCtx() {
-            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            return audioCtx;
+        // === Logging ===
+        var LOG_BUFFER = [];
+        function log(tag, msg) {
+            var entry = '[' + performance.now().toFixed(0) + '][' + tag + '] ' + msg;
+            if (LOG_BUFFER.length > 150) LOG_BUFFER.shift();
+            LOG_BUFFER.push(entry);
+            console.log(entry);
         }
+
+        // === Audio ===
+        var audioCtx = null;
         function playWhoosh() {
             try {
-                const ctx = getAudioCtx();
-                if (ctx.state === 'suspended') ctx.resume();
-                const duration = 0.3;
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                const filter = ctx.createBiquadFilter();
-
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                var d = 0.3, t = audioCtx.currentTime;
+                var osc = audioCtx.createOscillator();
+                var gain = audioCtx.createGain();
+                var filter = audioCtx.createBiquadFilter();
                 osc.type = 'sawtooth';
-                osc.frequency.setValueAtTime(800, ctx.currentTime);
-                osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + duration);
-
-                filter.type = 'bandpass';
-                filter.frequency.setValueAtTime(1000, ctx.currentTime);
-                filter.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + duration);
-                filter.Q.value = 2;
-
-                gain.gain.setValueAtTime(0.3, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-
-                osc.connect(filter);
-                filter.connect(gain);
-                gain.connect(ctx.destination);
-                osc.start();
-                osc.stop(ctx.currentTime + duration);
-
-                const bufferSize = Math.floor(ctx.sampleRate * duration);
-                const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-                const data = noiseBuffer.getChannelData(0);
-                for (let i = 0; i < bufferSize; i++) {
-                    data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
-                }
-                const noise = ctx.createBufferSource();
-                noise.buffer = noiseBuffer;
-                const noiseGain = ctx.createGain();
-                noiseGain.gain.setValueAtTime(0.15, ctx.currentTime);
-                noiseGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-                noise.connect(noiseGain);
-                noiseGain.connect(ctx.destination);
-                noise.start();
-                noise.stop(ctx.currentTime + duration);
-            } catch (e) {
-                console.warn('Audio error:', e);
-            }
+                osc.frequency.setValueAtTime(800, t);
+                osc.frequency.exponentialRampToValueAtTime(200, t + d);
+                filter.type = 'bandpass'; filter.frequency.setValueAtTime(1000, t);
+                filter.frequency.exponentialRampToValueAtTime(300, t + d); filter.Q.value = 2;
+                gain.gain.setValueAtTime(0.25, t);
+                gain.gain.exponentialRampToValueAtTime(0.001, t + d);
+                osc.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(); osc.stop(t + d);
+            } catch (e) {}
         }
 
         // === WebSocket ===
-        let ws = null;
-        let wsReady = false;
-        const statusEl = document.getElementById('status');
-
+        var ws = null, wsReady = false;
+        var statusEl = document.getElementById('status');
         function connectWS() {
             try {
                 ws = new WebSocket('ws://' + location.host + '/ws');
-                ws.onopen = function() {
-                    wsReady = true;
-                    statusEl.textContent = '● 已连接';
-                    statusEl.className = 'connected';
-                };
-                ws.onclose = function() {
-                    wsReady = false;
-                    statusEl.textContent = '● 断开';
-                    statusEl.className = 'disconnected';
-                    setTimeout(connectWS, 2000);
-                };
+                ws.onopen = function() { wsReady = true; statusEl.textContent = '● 已连接'; statusEl.className = 'connected'; log('WS','Connected'); };
+                ws.onclose = function() { wsReady = false; statusEl.textContent = '● 断开'; statusEl.className = 'disconnected'; setTimeout(connectWS, 2000); };
                 ws.onerror = function() { ws.close(); };
-                ws.onmessage = function(event) {
-                    try {
-                        var data = JSON.parse(event.data);
-                        handleGesture(data);
-                    } catch (e) {
-                        console.warn('WS parse error:', e);
-                    }
-                };
-            } catch (e) {
-                console.warn('WS connect error:', e);
-                setTimeout(connectWS, 3000);
-            }
+                ws.onmessage = function(ev) { try { handleGesture(JSON.parse(ev.data)); } catch(e) {} };
+            } catch(e) { setTimeout(connectWS, 3000); }
         }
         connectWS();
 
         // === Camera ===
-        const video = document.getElementById('webcam');
-        const overlay = document.getElementById('canvas-overlay');
-        const overlayCtx = overlay.getContext('2d');
-
-        const sendCanvas = document.createElement('canvas');
-        sendCanvas.width = 320;
-        sendCanvas.height = 240;
-        const sendCtx = sendCanvas.getContext('2d');
+        var video = document.getElementById('webcam');
+        var overlay = document.getElementById('canvas-overlay');
+        var overlayCtx = overlay.getContext('2d');
+        var sendCanvas = document.createElement('canvas');
+        sendCanvas.width = 320; sendCanvas.height = 240;
+        var sendCtx = sendCanvas.getContext('2d');
 
         navigator.mediaDevices.getUserMedia({
             video: { width: 320, height: 240, frameRate: { ideal: 20, max: 30 } }
@@ -276,138 +266,147 @@
                 overlay.width = video.videoWidth;
                 overlay.height = video.videoHeight;
                 startSending();
+                log('CAM', 'Started ' + video.videoWidth + 'x' + video.videoHeight);
             };
         }).catch(function(err) {
-            console.warn('Camera error:', err);
-            document.getElementById('gesture-name').textContent = '摄像头不可用 (3D场景仍可运行)';
+            document.getElementById('gesture-name').textContent = '摄像头不可用';
         });
 
-        let lastSendTime = 0;
-        const SEND_INTERVAL = 50;
-
+        var lastSendTime = 0;
+        var SEND_INTERVAL = 55; // ~18fps send rate to avoid overloading server
         function startSending() {
-            function sendFrame() {
-                requestAnimationFrame(sendFrame);
+            function tick() {
+                requestAnimationFrame(tick);
                 var now = performance.now();
-                if (now - lastSendTime < SEND_INTERVAL) return;
-                if (!wsReady) return;
-
+                if (now - lastSendTime < SEND_INTERVAL || !wsReady) return;
                 lastSendTime = now;
                 sendCtx.drawImage(video, 0, 0, 320, 240);
-                var dataUrl = sendCanvas.toDataURL('image/jpeg', 0.6);
-                try {
-                    ws.send(JSON.stringify({ type: 'frame', data: dataUrl }));
-                } catch (e) {}
+                try { ws.send(JSON.stringify({ type: 'frame', data: sendCanvas.toDataURL('image/jpeg', 0.55) })); } catch(e) {}
             }
-            sendFrame();
+            tick();
         }
 
-        // === Gesture Handling ===
-        const gestureNameEl = document.getElementById('gesture-name');
-        const gestureParamsEl = document.getElementById('gesture-params');
+        // === Debug Panel (cached DOM refs) ===
+        var dbgGesture = document.getElementById('dbg-gesture');
+        var dbgConf = document.getElementById('dbg-conf');
+        var dbgFist = document.getElementById('dbg-fist');
+        var dbgPinch = document.getElementById('dbg-pinch');
+        var dbgCurls = document.getElementById('dbg-curls');
+        var dbgSpeed = document.getElementById('dbg-speed');
+        var dbgFrame = document.getElementById('dbg-frame');
+        var lastDebugUpdate = 0;
 
-        let currentGesture = 'none';
-        let targetRotX = 0, targetRotY = 0;
-        let targetScale = 1;
-        let lastWaveTime = 0;
-        let colorIndex = 0;
-        const COLORS = [0x667eea, 0xf093fb, 0x4facfe, 0x43e97b, 0xfa709a, 0xfee140];
-        let trailPoints = [];
+        function updateDebugPanel(data) {
+            // Throttle DOM updates to 10fps to reduce reflow
+            var now = performance.now();
+            if (now - lastDebugUpdate < 100) return;
+            lastDebugUpdate = now;
+            dbgGesture.textContent = data.gesture || 'none';
+            dbgConf.textContent = (data.confidence || 0).toFixed(3);
+            dbgFist.textContent = (data.fist_strength || 0).toFixed(3);
+            var pd = (data.pinch_distance || 0).toFixed(3);
+            var pn = (data.pinch_normalized || 0).toFixed(3);
+            dbgPinch.textContent = 'd=' + pd + ' n=' + pn;
+            if (data.curls) {
+                var c = data.curls;
+                dbgCurls.textContent = 'T:' + (c.thumb||0).toFixed(2) + ' I:' + (c.index||0).toFixed(2) +
+                    ' M:' + (c.middle||0).toFixed(2) + ' R:' + (c.ring||0).toFixed(2) + ' P:' + (c.pinky||0).toFixed(2);
+            }
+            dbgSpeed.textContent = (data.palm_speed || 0).toFixed(3);
+            dbgFrame.textContent = data.frame_id || 0;
+        }
 
-        const GESTURE_NAMES = {
+        // === Gesture State ===
+        var currentGesture = 'none';
+        var targetRotX = 0, targetRotY = 0, targetScale = 1;
+        var targetFistStrength = 0, targetPinchIntensity = 0;
+        var currentFistStrength = 0, currentPinchIntensity = 0;
+        var lastWaveTime = 0, colorIndex = 0;
+        var COLORS = [0x667eea, 0xf093fb, 0x4facfe, 0x43e97b, 0xfa709a, 0xfee140];
+        var trailPoints = [];
+
+        var GESTURE_NAMES = {
             'none': '等待手势...',
-            'fist': '✊ 握拳 - 旋转',
-            'pinch': '🤏 捏合 - 缩放',
+            'fist': '✊ 握拳 - 旋转+光环',
+            'pinch': '🤏 捏合 - 粒子波',
             'wave': '👋 挥手 - 变色',
         };
 
         function handleGesture(data) {
             currentGesture = data.gesture;
-            gestureNameEl.textContent = GESTURE_NAMES[data.gesture] || '等待手势...';
+            document.getElementById('gesture-name').textContent = GESTURE_NAMES[data.gesture] || '等待手势...';
+            updateDebugPanel(data);
 
             if (data.gesture === 'fist') {
-                targetRotX = data.rotation_y;
-                targetRotY = data.rotation_x;
-                gestureParamsEl.textContent = '旋转: X=' + data.rotation_x.toFixed(2) + ' Y=' + data.rotation_y.toFixed(2);
+                targetRotX = data.rotation_y || 0;
+                targetRotY = data.rotation_x || 0;
+                targetFistStrength = data.fist_strength || 0;
+                targetPinchIntensity = 0;
+                document.getElementById('gesture-params').textContent =
+                    '力度:' + (data.fist_strength||0).toFixed(2) + ' 旋转:(' + (data.rotation_x||0).toFixed(1) + ',' + (data.rotation_y||0).toFixed(1) + ')';
             } else if (data.gesture === 'pinch') {
-                targetScale = data.scale;
-                gestureParamsEl.textContent = '缩放: ' + data.scale.toFixed(2) + 'x';
+                targetScale = data.scale || 1;
+                targetPinchIntensity = data.pinch_intensity || 0;
+                targetFistStrength = 0;
+                document.getElementById('gesture-params').textContent =
+                    '强度:' + (data.pinch_intensity||0).toFixed(2) + ' 缩放:' + (data.scale||1).toFixed(2) + 'x';
             } else if (data.gesture === 'wave') {
+                targetFistStrength = 0;
+                targetPinchIntensity = 0;
                 var now = Date.now();
                 if (now - lastWaveTime > 800) {
                     lastWaveTime = now;
                     colorIndex = (colorIndex + 1) % COLORS.length;
                     triggerColorChange();
                     playWhoosh();
+                    log('GESTURE', 'Wave color=' + colorIndex);
                 }
-                gestureParamsEl.textContent = '切换颜色!';
+                document.getElementById('gesture-params').textContent = '切换颜色!';
             } else {
-                gestureParamsEl.textContent = '';
+                targetFistStrength = 0;
+                targetPinchIntensity = 0;
+                document.getElementById('gesture-params').textContent = '';
             }
 
             if (data.trail && data.trail.length > 0) {
                 trailPoints = data.trail.map(function(p) {
-                    return {
-                        x: (p.x - 0.5) * 6,
-                        y: -(p.y - 0.5) * 4,
-                        z: p.z * 3
-                    };
+                    return { x: (p.x - 0.5) * 6, y: -(p.y - 0.5) * 4, z: p.z * 3 };
                 });
             } else {
                 trailPoints = [];
             }
 
-            if (data.landmarks) {
-                drawHandOverlay(data.landmarks);
-            }
+            if (data.landmarks) drawHandOverlay(data.landmarks);
         }
 
-        function drawHandOverlay(landmarks) {
+        function drawHandOverlay(lm) {
             overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-            var w = overlay.width;
-            var h = overlay.height;
-            if (w === 0 || h === 0) return;
-
-            var connections = [
-                [0,1],[1,2],[2,3],[3,4],
-                [0,5],[5,6],[6,7],[7,8],
-                [5,9],[9,10],[10,11],[11,12],
-                [9,13],[13,14],[14,15],[15,16],
-                [13,17],[17,18],[18,19],[19,20],
-                [0,17]
-            ];
-
-            overlayCtx.strokeStyle = 'rgba(102, 126, 234, 0.8)';
+            var w = overlay.width, h = overlay.height;
+            if (!w || !h) return;
+            var conn = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+            overlayCtx.strokeStyle = 'rgba(102,126,234,0.8)';
             overlayCtx.lineWidth = 2;
-            for (var ci = 0; ci < connections.length; ci++) {
-                var a = connections[ci][0], b = connections[ci][1];
+            for (var i = 0; i < conn.length; i++) {
                 overlayCtx.beginPath();
-                overlayCtx.moveTo(landmarks[a].x * w, landmarks[a].y * h);
-                overlayCtx.lineTo(landmarks[b].x * w, landmarks[b].y * h);
+                overlayCtx.moveTo(lm[conn[i][0]].x*w, lm[conn[i][0]].y*h);
+                overlayCtx.lineTo(lm[conn[i][1]].x*w, lm[conn[i][1]].y*h);
                 overlayCtx.stroke();
             }
-
-            for (var li = 0; li < landmarks.length; li++) {
+            for (var j = 0; j < lm.length; j++) {
                 overlayCtx.beginPath();
-                overlayCtx.arc(landmarks[li].x * w, landmarks[li].y * h, 4, 0, Math.PI * 2);
-                overlayCtx.fillStyle = li === 0 ? '#f093fb' : '#667eea';
+                overlayCtx.arc(lm[j].x*w, lm[j].y*h, 3, 0, 6.28);
+                overlayCtx.fillStyle = j===0 ? '#f093fb' : '#667eea';
                 overlayCtx.fill();
             }
         }
 
-        // === Three.js Scene Setup ===
+        // === Three.js Setup ===
         var threePanel = document.getElementById('three-panel');
         var canvas = document.getElementById('three-canvas');
-
-        // Get actual panel dimensions (wait one frame for layout)
         var panelWidth = threePanel.clientWidth || window.innerWidth * 0.65;
         var panelHeight = threePanel.clientHeight || window.innerHeight;
 
-        var renderer = new THREE.WebGLRenderer({
-            canvas: canvas,
-            antialias: true,
-            alpha: false
-        });
+        var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.setSize(panelWidth, panelHeight);
         renderer.setClearColor(0x0a0a0f, 1);
@@ -415,176 +414,153 @@
 
         var scene = new THREE.Scene();
         scene.background = new THREE.Color(0x0a0a0f);
-
         var camera = new THREE.PerspectiveCamera(60, panelWidth / panelHeight, 0.1, 100);
         camera.position.set(0, 0, 6);
         camera.lookAt(0, 0, 0);
 
-        // Lighting - strong enough to see the model
-        var ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
-        scene.add(ambientLight);
-
+        // Lighting
+        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
         var pointLight1 = new THREE.PointLight(0x667eea, 80, 30);
-        pointLight1.position.set(4, 4, 6);
-        scene.add(pointLight1);
-
+        pointLight1.position.set(4, 4, 6); scene.add(pointLight1);
         var pointLight2 = new THREE.PointLight(0xf093fb, 60, 30);
-        pointLight2.position.set(-4, -3, 5);
-        scene.add(pointLight2);
-
+        pointLight2.position.set(-4, -3, 5); scene.add(pointLight2);
         var pointLight3 = new THREE.PointLight(0x4facfe, 40, 25);
-        pointLight3.position.set(0, 0, -5);
-        scene.add(pointLight3);
+        pointLight3.position.set(0, 0, -5); scene.add(pointLight3);
 
-        // Magic Ball - Torus Knot (primary model)
+        // Torus Knot
         var torusKnot, torusMat, wireframe;
         try {
             var torusGeom = new THREE.TorusKnotGeometry(1.2, 0.35, 128, 32);
-            torusMat = new THREE.MeshStandardMaterial({
-                color: COLORS[0],
-                emissive: COLORS[0],
-                emissiveIntensity: 0.4,
-                metalness: 0.3,
-                roughness: 0.4,
-                transparent: true,
-                opacity: 0.9,
-            });
+            torusMat = new THREE.MeshStandardMaterial({ color: COLORS[0], emissive: COLORS[0], emissiveIntensity: 0.4, metalness: 0.3, roughness: 0.4, transparent: true, opacity: 0.9 });
             torusKnot = new THREE.Mesh(torusGeom, torusMat);
             scene.add(torusKnot);
-
-            // Wireframe overlay
-            var wireMat = new THREE.MeshBasicMaterial({
-                color: 0xffffff,
-                wireframe: true,
-                transparent: true,
-                opacity: 0.08,
-            });
-            wireframe = new THREE.Mesh(torusGeom, wireMat);
+            wireframe = new THREE.Mesh(torusGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.08 }));
             scene.add(wireframe);
-        } catch (e) {
-            console.warn('TorusKnot failed, using fallback sphere:', e);
-            var fallbackGeom = new THREE.SphereGeometry(1.5, 32, 32);
-            torusMat = new THREE.MeshStandardMaterial({
-                color: COLORS[0],
-                emissive: COLORS[0],
-                emissiveIntensity: 0.5,
-                metalness: 0.2,
-                roughness: 0.5,
-            });
-            torusKnot = new THREE.Mesh(fallbackGeom, torusMat);
+        } catch(e) {
+            torusMat = new THREE.MeshStandardMaterial({ color: COLORS[0], emissive: COLORS[0], emissiveIntensity: 0.5, metalness: 0.2, roughness: 0.5 });
+            torusKnot = new THREE.Mesh(new THREE.SphereGeometry(1.5, 32, 32), torusMat);
             scene.add(torusKnot);
             wireframe = torusKnot;
         }
 
-        // Outer glow sphere
-        var glowGeom = new THREE.SphereGeometry(2.2, 32, 32);
-        var glowMat = new THREE.MeshBasicMaterial({
-            color: COLORS[0],
-            transparent: true,
-            opacity: 0.05,
-            side: THREE.BackSide,
-        });
-        var glowMesh = new THREE.Mesh(glowGeom, glowMat);
+        // Glow sphere
+        var glowMat = new THREE.MeshBasicMaterial({ color: COLORS[0], transparent: true, opacity: 0.05, side: THREE.BackSide });
+        var glowMesh = new THREE.Mesh(new THREE.SphereGeometry(2.2, 32, 32), glowMat);
         scene.add(glowMesh);
 
-        // Particle system for trailing effect
-        var PARTICLE_COUNT = 1500;
-        var particleGeom = new THREE.BufferGeometry();
-        var positions = new Float32Array(PARTICLE_COUNT * 3);
-        var pColors = new Float32Array(PARTICLE_COUNT * 3);
-        var velocities = [];
-        var lifetimes = new Float32Array(PARTICLE_COUNT);
+        // === ENERGY HALO (Fist) - Sprites, pre-allocated ===
+        var HALO_COUNT = 3;
+        var haloRings = [];
+        var haloTexture = (function() {
+            var c = document.createElement('canvas'); c.width = 256; c.height = 256;
+            var ctx = c.getContext('2d');
+            var g = ctx.createRadialGradient(128, 128, 70, 128, 128, 128);
+            g.addColorStop(0, 'rgba(255,255,255,0)');
+            g.addColorStop(0.35, 'rgba(255,200,100,0.5)');
+            g.addColorStop(0.55, 'rgba(200,100,255,0.7)');
+            g.addColorStop(0.75, 'rgba(100,126,234,0.4)');
+            g.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = g; ctx.fillRect(0, 0, 256, 256);
+            return new THREE.CanvasTexture(c);
+        })();
 
-        for (var i = 0; i < PARTICLE_COUNT; i++) {
-            var theta = Math.random() * Math.PI * 2;
-            var phi = Math.random() * Math.PI;
-            var r = 1.5 + Math.random() * 1.0;
-            positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-            positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-            positions[i * 3 + 2] = r * Math.cos(phi);
-            pColors[i * 3] = 0.4;
-            pColors[i * 3 + 1] = 0.5;
-            pColors[i * 3 + 2] = 0.92;
-            velocities.push(new THREE.Vector3(
-                (Math.random() - 0.5) * 0.015,
-                (Math.random() - 0.5) * 0.015,
-                (Math.random() - 0.5) * 0.015
-            ));
-            lifetimes[i] = Math.random();
+        for (var hi = 0; hi < HALO_COUNT; hi++) {
+            var hMat = new THREE.SpriteMaterial({ map: haloTexture, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+            var hSprite = new THREE.Sprite(hMat);
+            hSprite.scale.set(0.1, 0.1, 1);
+            hSprite.userData = { phase: hi * 2.094, baseScale: 2.8 + hi * 0.9 };
+            scene.add(hSprite);
+            haloRings.push(hSprite);
         }
 
-        particleGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        particleGeom.setAttribute('color', new THREE.BufferAttribute(pColors, 3));
+        // === PARTICLE WAVE (Pinch) - pre-allocated pool ===
+        var WAVE_P_COUNT = 250;
+        var waveGeom = new THREE.BufferGeometry();
+        var wavePos = new Float32Array(WAVE_P_COUNT * 3);
+        var waveCol = new Float32Array(WAVE_P_COUNT * 3);
+        var waveVel = [];
+        var waveLife = new Float32Array(WAVE_P_COUNT);
+        var waveOn = new Uint8Array(WAVE_P_COUNT);
+        for (var wi = 0; wi < WAVE_P_COUNT; wi++) { waveVel.push(new THREE.Vector3()); }
+        waveGeom.setAttribute('position', new THREE.BufferAttribute(wavePos, 3));
+        waveGeom.setAttribute('color', new THREE.BufferAttribute(waveCol, 3));
+        var waveMat = new THREE.PointsMaterial({ size: 0.1, vertexColors: true, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+        scene.add(new THREE.Points(waveGeom, waveMat));
 
-        var particleMat = new THREE.PointsMaterial({
-            size: 0.05,
-            vertexColors: true,
-            transparent: true,
-            opacity: 0.8,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-            sizeAttenuation: true,
-        });
+        var lastWaveEmit = 0;
+        // Pre-allocated Color for wave particle emission (avoid new Color per particle)
+        var _tmpWaveColor = new THREE.Color();
 
-        var particles = new THREE.Points(particleGeom, particleMat);
-        scene.add(particles);
+        function emitWaveParticles(intensity) {
+            var count = Math.floor(intensity * 15) + 3;
+            var emitted = 0;
+            for (var i = 0; i < WAVE_P_COUNT && emitted < count; i++) {
+                if (waveOn[i]) continue;
+                var th = Math.random() * 6.28;
+                var ph = Math.random() * 3.14;
+                var sp = 0.025 + Math.random() * 0.04 * intensity;
+                wavePos[i*3] = 0; wavePos[i*3+1] = 0; wavePos[i*3+2] = 0;
+                waveVel[i].set(Math.sin(ph)*Math.cos(th)*sp, Math.sin(ph)*Math.sin(th)*sp, Math.cos(ph)*sp);
+                waveLife[i] = 1.0;
+                waveOn[i] = 1;
+                _tmpWaveColor.setHSL((th/6.28 + intensity*0.3) % 1.0, 0.85, 0.6);
+                waveCol[i*3] = _tmpWaveColor.r; waveCol[i*3+1] = _tmpWaveColor.g; waveCol[i*3+2] = _tmpWaveColor.b;
+                emitted++;
+            }
+        }
 
-        // Hand Trail Particle Line
-        var TRAIL_MAX = 50;
+        // === Ambient Particles ===
+        var P_COUNT = 1200;
+        var partGeom = new THREE.BufferGeometry();
+        var partPos = new Float32Array(P_COUNT * 3);
+        var partCol = new Float32Array(P_COUNT * 3);
+        var partVel = [];
+        var partLife = new Float32Array(P_COUNT);
+        for (var i = 0; i < P_COUNT; i++) {
+            var th = Math.random()*6.28, ph = Math.random()*3.14, r = 1.5+Math.random();
+            partPos[i*3] = r*Math.sin(ph)*Math.cos(th);
+            partPos[i*3+1] = r*Math.sin(ph)*Math.sin(th);
+            partPos[i*3+2] = r*Math.cos(ph);
+            partCol[i*3] = 0.4; partCol[i*3+1] = 0.5; partCol[i*3+2] = 0.92;
+            partVel.push(new THREE.Vector3((Math.random()-0.5)*0.012, (Math.random()-0.5)*0.012, (Math.random()-0.5)*0.012));
+            partLife[i] = Math.random();
+        }
+        partGeom.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
+        partGeom.setAttribute('color', new THREE.BufferAttribute(partCol, 3));
+        scene.add(new THREE.Points(partGeom, new THREE.PointsMaterial({ size: 0.045, vertexColors: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true })));
+
+        // Hand Trail
+        var TRAIL_MAX = 40;
         var trailGeom = new THREE.BufferGeometry();
-        var trailPositions = new Float32Array(TRAIL_MAX * 3);
-        var trailColorsArr = new Float32Array(TRAIL_MAX * 3);
-        trailGeom.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
-        trailGeom.setAttribute('color', new THREE.BufferAttribute(trailColorsArr, 3));
+        var trailPos = new Float32Array(TRAIL_MAX*3);
+        var trailCol = new Float32Array(TRAIL_MAX*3);
+        trailGeom.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+        trailGeom.setAttribute('color', new THREE.BufferAttribute(trailCol, 3));
         trailGeom.setDrawRange(0, 0);
-
-        var trailMat = new THREE.PointsMaterial({
-            size: 0.15,
-            vertexColors: true,
-            transparent: true,
-            opacity: 0.9,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-            sizeAttenuation: true,
-        });
-        var trailMesh = new THREE.Points(trailGeom, trailMat);
-        scene.add(trailMesh);
-
-        // Also add a line for the trail
+        scene.add(new THREE.Points(trailGeom, new THREE.PointsMaterial({ size: 0.12, vertexColors: true, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true })));
         var trailLineGeom = new THREE.BufferGeometry();
-        var trailLinePositions = new Float32Array(TRAIL_MAX * 3);
-        trailLineGeom.setAttribute('position', new THREE.BufferAttribute(trailLinePositions, 3));
+        var trailLinePos = new Float32Array(TRAIL_MAX*3);
+        trailLineGeom.setAttribute('position', new THREE.BufferAttribute(trailLinePos, 3));
         trailLineGeom.setDrawRange(0, 0);
-        var trailLineMat = new THREE.LineBasicMaterial({
-            color: 0x667eea,
-            transparent: true,
-            opacity: 0.5,
-            blending: THREE.AdditiveBlending,
-        });
-        var trailLine = new THREE.Line(trailLineGeom, trailLineMat);
-        scene.add(trailLine);
+        scene.add(new THREE.Line(trailLineGeom, new THREE.LineBasicMaterial({ color: 0x667eea, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending })));
 
-        // Pulse ring effects
+        // Pulse rings (wave)
         var pulseRings = [];
         function createPulseRing() {
-            var ringGeom = new THREE.RingGeometry(1.5, 1.8, 64);
-            var ringMat = new THREE.MeshBasicMaterial({
-                color: COLORS[colorIndex],
-                transparent: true,
-                opacity: 0.8,
-                side: THREE.DoubleSide,
-                blending: THREE.AdditiveBlending,
-            });
-            var ring = new THREE.Mesh(ringGeom, ringMat);
+            var rg = new THREE.RingGeometry(1.5, 1.8, 48);
+            var rm = new THREE.MeshBasicMaterial({ color: COLORS[colorIndex], transparent: true, opacity: 0.7, side: THREE.DoubleSide, blending: THREE.AdditiveBlending });
+            var ring = new THREE.Mesh(rg, rm);
             ring.userData = { life: 1.0 };
             scene.add(ring);
             pulseRings.push(ring);
         }
 
-        // Color change transition state
+        // Color transition - PRE-ALLOCATED scratch colors
         var colorTransition = 0;
         var prevColor = new THREE.Color(COLORS[0]);
         var nextColor = new THREE.Color(COLORS[0]);
+        var _lerpColor = new THREE.Color();
+        var _currentColor = new THREE.Color(COLORS[0]);
 
         function triggerColorChange() {
             prevColor.copy(torusMat.color);
@@ -595,30 +571,31 @@
         }
 
         // === Animation Loop ===
-        var frameCount = 0;
-        var lastFpsTime = performance.now();
+        var frameCount = 0, lastFpsTime = performance.now();
         var fpsEl = document.getElementById('fps-counter');
-
         var smoothRotX = 0, smoothRotY = 0, smoothScale = 1;
 
         function animate() {
             requestAnimationFrame(animate);
             var time = performance.now() * 0.001;
 
-            // FPS counter
+            // FPS
             frameCount++;
-            if (performance.now() - lastFpsTime > 1000) {
+            var now = performance.now();
+            if (now - lastFpsTime > 1000) {
                 fpsEl.textContent = 'FPS: ' + frameCount;
                 frameCount = 0;
-                lastFpsTime = performance.now();
+                lastFpsTime = now;
             }
 
-            // Smooth interpolation
+            // Smooth interpolation (no object allocation)
             smoothRotX += (targetRotX - smoothRotX) * 0.08;
             smoothRotY += (targetRotY - smoothRotY) * 0.08;
             smoothScale += (targetScale - smoothScale) * 0.08;
+            currentFistStrength += (targetFistStrength - currentFistStrength) * 0.1;
+            currentPinchIntensity += (targetPinchIntensity - currentPinchIntensity) * 0.1;
 
-            // Apply rotation
+            // --- FIST: Rotation + Halo (both active simultaneously) ---
             if (currentGesture === 'fist') {
                 torusKnot.rotation.x = smoothRotX;
                 torusKnot.rotation.y = smoothRotY;
@@ -626,128 +603,141 @@
                 torusKnot.rotation.x += 0.004;
                 torusKnot.rotation.y += 0.006;
             }
-            if (wireframe !== torusKnot) {
-                wireframe.rotation.copy(torusKnot.rotation);
-            }
+            if (wireframe !== torusKnot) wireframe.rotation.copy(torusKnot.rotation);
 
-            // Apply scale
-            var s = smoothScale;
-            torusKnot.scale.set(s, s, s);
-            if (wireframe !== torusKnot) {
-                wireframe.scale.set(s, s, s);
-            }
-            glowMesh.scale.set(s, s, s);
+            // Scale
+            torusKnot.scale.setScalar(smoothScale);
+            if (wireframe !== torusKnot) wireframe.scale.setScalar(smoothScale);
+            glowMesh.scale.setScalar(smoothScale);
 
-            // Color transition
+            // Color transition (no allocation - reuse _lerpColor)
             if (colorTransition > 0) {
                 colorTransition -= 0.02;
                 if (colorTransition < 0) colorTransition = 0;
-                var t = 1 - colorTransition;
-                var c = new THREE.Color().lerpColors(prevColor, nextColor, t);
-                torusMat.color.copy(c);
-                torusMat.emissive.copy(c);
+                _lerpColor.lerpColors(prevColor, nextColor, 1 - colorTransition);
+                torusMat.color.copy(_lerpColor);
+                torusMat.emissive.copy(_lerpColor);
                 torusMat.emissiveIntensity = 0.4 + colorTransition * 0.6;
             }
 
-            // Update particles
-            var posArr = particleGeom.attributes.position.array;
-            var colArr = particleGeom.attributes.color.array;
-            var currentColor = new THREE.Color(COLORS[colorIndex]);
-
-            for (var i = 0; i < PARTICLE_COUNT; i++) {
-                lifetimes[i] -= 0.004;
-                if (lifetimes[i] <= 0) {
-                    lifetimes[i] = 1.0;
-                    var theta2 = Math.random() * Math.PI * 2;
-                    var phi2 = Math.random() * Math.PI;
-                    var r2 = 1.3 + Math.random() * 0.6;
-                    posArr[i * 3] = r2 * Math.sin(phi2) * Math.cos(theta2);
-                    posArr[i * 3 + 1] = r2 * Math.sin(phi2) * Math.sin(theta2);
-                    posArr[i * 3 + 2] = r2 * Math.cos(phi2);
+            // === ENERGY HALO (fist_strength driven, coexists with rotation) ===
+            for (var hi = 0; hi < HALO_COUNT; hi++) {
+                var halo = haloRings[hi];
+                var ud = halo.userData;
+                if (currentFistStrength > 0.05) {
+                    var pulse = Math.sin(time * 2.5 + ud.phase) * 0.25 + 0.75;
+                    var tgtScale = ud.baseScale * currentFistStrength * pulse;
+                    var curScale = halo.scale.x;
+                    var ns = curScale + (tgtScale - curScale) * 0.1;
+                    halo.scale.set(ns, ns, 1);
+                    halo.material.opacity = currentFistStrength * 0.55 * pulse;
+                    halo.material.color.setHSL(((time * 0.15 + hi * 0.22) % 1.0), 0.85, 0.5 + currentFistStrength * 0.25);
+                } else {
+                    halo.scale.x *= 0.93; halo.scale.y *= 0.93;
+                    halo.material.opacity *= 0.9;
+                    if (halo.material.opacity < 0.005) halo.material.opacity = 0;
                 }
-
-                var flowX = velocities[i].x;
-                var flowY = velocities[i].y;
-                var flowZ = velocities[i].z;
-
-                if (currentGesture === 'fist') {
-                    flowX += Math.sin(smoothRotY) * 0.008;
-                    flowY += Math.cos(smoothRotX) * 0.008;
-                    flowZ += Math.sin(time + i * 0.01) * 0.004;
-                }
-
-                posArr[i * 3] += flowX;
-                posArr[i * 3 + 1] += flowY;
-                posArr[i * 3 + 2] += flowZ;
-
-                var dx = posArr[i * 3];
-                var dy = posArr[i * 3 + 1];
-                var dz = posArr[i * 3 + 2];
-                var dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                if (dist > 3.5) {
-                    var norm = 1.3 / dist;
-                    posArr[i * 3] *= norm;
-                    posArr[i * 3 + 1] *= norm;
-                    posArr[i * 3 + 2] *= norm;
-                    lifetimes[i] = 1.0;
-                }
-
-                // Pulse effect on pinch
-                if (currentGesture === 'pinch') {
-                    var pulse = Math.sin(time * 8) * 0.008;
-                    posArr[i * 3] *= (1 + pulse);
-                    posArr[i * 3 + 1] *= (1 + pulse);
-                    posArr[i * 3 + 2] *= (1 + pulse);
-                }
-
-                colArr[i * 3] = currentColor.r * (0.3 + lifetimes[i] * 0.7);
-                colArr[i * 3 + 1] = currentColor.g * (0.3 + lifetimes[i] * 0.7);
-                colArr[i * 3 + 2] = currentColor.b * (0.3 + lifetimes[i] * 0.7);
             }
-            particleGeom.attributes.position.needsUpdate = true;
-            particleGeom.attributes.color.needsUpdate = true;
 
-            // Update hand trail
+            // === PARTICLE WAVE (pinch driven) ===
+            if (currentGesture === 'pinch' && currentPinchIntensity > 0.1) {
+                if (now - lastWaveEmit > 90) {
+                    emitWaveParticles(currentPinchIntensity);
+                    lastWaveEmit = now;
+                }
+            }
+            var anyWave = false;
+            for (var wi = 0; wi < WAVE_P_COUNT; wi++) {
+                if (!waveOn[wi]) continue;
+                anyWave = true;
+                waveLife[wi] -= 0.014;
+                if (waveLife[wi] <= 0) {
+                    waveOn[wi] = 0;
+                    wavePos[wi*3] = 0; wavePos[wi*3+1] = 0; wavePos[wi*3+2] = 0;
+                } else {
+                    wavePos[wi*3] += waveVel[wi].x;
+                    wavePos[wi*3+1] += waveVel[wi].y;
+                    wavePos[wi*3+2] += waveVel[wi].z;
+                    waveVel[wi].multiplyScalar(0.987);
+                    var f = waveLife[wi];
+                    waveCol[wi*3] *= (0.98 + f*0.02);
+                    waveCol[wi*3+1] *= (0.97 + f*0.03);
+                    waveCol[wi*3+2] *= (0.99 + f*0.01);
+                }
+            }
+            if (anyWave) {
+                waveGeom.attributes.position.needsUpdate = true;
+                waveGeom.attributes.color.needsUpdate = true;
+            }
+
+            // === Ambient Particles (no per-frame Color allocation) ===
+            _currentColor.set(COLORS[colorIndex]);
+            var pp = partGeom.attributes.position.array;
+            var pc = partGeom.attributes.color.array;
+            for (var i = 0; i < P_COUNT; i++) {
+                partLife[i] -= 0.004;
+                if (partLife[i] <= 0) {
+                    partLife[i] = 1.0;
+                    var th2 = Math.random()*6.28, ph2 = Math.random()*3.14, r2 = 1.3+Math.random()*0.6;
+                    pp[i*3] = r2*Math.sin(ph2)*Math.cos(th2);
+                    pp[i*3+1] = r2*Math.sin(ph2)*Math.sin(th2);
+                    pp[i*3+2] = r2*Math.cos(ph2);
+                }
+                pp[i*3] += partVel[i].x;
+                pp[i*3+1] += partVel[i].y;
+                pp[i*3+2] += partVel[i].z;
+                if (currentGesture === 'fist') {
+                    pp[i*3] += Math.sin(smoothRotY) * 0.006;
+                    pp[i*3+1] += Math.cos(smoothRotX) * 0.006;
+                }
+                var dx = pp[i*3], dy = pp[i*3+1], dz = pp[i*3+2];
+                var d = Math.sqrt(dx*dx+dy*dy+dz*dz);
+                if (d > 3.5) { var n = 1.3/d; pp[i*3]*=n; pp[i*3+1]*=n; pp[i*3+2]*=n; partLife[i]=1.0; }
+                if (currentGesture === 'pinch') {
+                    var pul = Math.sin(time*8)*0.006;
+                    pp[i*3]*=(1+pul); pp[i*3+1]*=(1+pul); pp[i*3+2]*=(1+pul);
+                }
+                var lf = 0.3 + partLife[i]*0.7;
+                pc[i*3] = _currentColor.r * lf;
+                pc[i*3+1] = _currentColor.g * lf;
+                pc[i*3+2] = _currentColor.b * lf;
+            }
+            partGeom.attributes.position.needsUpdate = true;
+            partGeom.attributes.color.needsUpdate = true;
+
+            // Hand trail
             if (trailPoints.length > 1) {
-                var count = Math.min(trailPoints.length, TRAIL_MAX);
+                var cnt = Math.min(trailPoints.length, TRAIL_MAX);
                 var tp = trailGeom.attributes.position.array;
                 var tc = trailGeom.attributes.color.array;
                 var tlp = trailLineGeom.attributes.position.array;
-                for (var ti = 0; ti < count; ti++) {
-                    var p = trailPoints[ti];
-                    tp[ti * 3] = p.x;
-                    tp[ti * 3 + 1] = p.y;
-                    tp[ti * 3 + 2] = p.z;
-                    tlp[ti * 3] = p.x;
-                    tlp[ti * 3 + 1] = p.y;
-                    tlp[ti * 3 + 2] = p.z;
-                    var tt = ti / count;
-                    tc[ti * 3] = 0.4 + tt * 0.6;
-                    tc[ti * 3 + 1] = 0.2 + tt * 0.5;
-                    tc[ti * 3 + 2] = 0.9;
+                for (var ti = 0; ti < cnt; ti++) {
+                    var pt = trailPoints[ti];
+                    tp[ti*3]=pt.x; tp[ti*3+1]=pt.y; tp[ti*3+2]=pt.z;
+                    tlp[ti*3]=pt.x; tlp[ti*3+1]=pt.y; tlp[ti*3+2]=pt.z;
+                    var tt = ti/cnt;
+                    tc[ti*3]=0.4+tt*0.6; tc[ti*3+1]=0.2+tt*0.5; tc[ti*3+2]=0.9;
                 }
-                trailGeom.setDrawRange(0, count);
+                trailGeom.setDrawRange(0, cnt);
                 trailGeom.attributes.position.needsUpdate = true;
                 trailGeom.attributes.color.needsUpdate = true;
-                trailLineGeom.setDrawRange(0, count);
+                trailLineGeom.setDrawRange(0, cnt);
                 trailLineGeom.attributes.position.needsUpdate = true;
             } else {
                 trailGeom.setDrawRange(0, 0);
                 trailLineGeom.setDrawRange(0, 0);
             }
 
-            // Update pulse rings
+            // Pulse rings
             for (var ri = pulseRings.length - 1; ri >= 0; ri--) {
                 var ring = pulseRings[ri];
                 ring.userData.life -= 0.012;
                 if (ring.userData.life <= 0) {
-                    scene.remove(ring);
-                    ring.geometry.dispose();
-                    ring.material.dispose();
+                    scene.remove(ring); ring.geometry.dispose(); ring.material.dispose();
                     pulseRings.splice(ri, 1);
                 } else {
-                    var rscale = 1 + (1 - ring.userData.life) * 3;
-                    ring.scale.set(rscale, rscale, rscale);
+                    var rs = 1 + (1 - ring.userData.life) * 3;
+                    ring.scale.set(rs, rs, rs);
                     ring.material.opacity = ring.userData.life * 0.6;
                     ring.rotation.x = torusKnot.rotation.x;
                     ring.rotation.y = torusKnot.rotation.y;
@@ -756,47 +746,35 @@
 
             // Emissive pulse on pinch
             if (currentGesture === 'pinch') {
-                torusMat.emissiveIntensity = 0.4 + Math.sin(time * 6) * 0.35;
-                glowMat.opacity = 0.05 + Math.sin(time * 6) * 0.04;
+                torusMat.emissiveIntensity = 0.4 + Math.sin(time*6)*0.3;
+                glowMat.opacity = 0.05 + Math.sin(time*6)*0.03;
             } else {
                 glowMat.opacity = 0.05;
             }
 
-            // Ambient rotation for lights
-            pointLight1.position.x = Math.sin(time * 0.5) * 5;
-            pointLight1.position.z = Math.cos(time * 0.5) * 5 + 2;
-            pointLight2.position.x = Math.cos(time * 0.7) * 4;
-            pointLight2.position.y = Math.sin(time * 0.7) * 4;
+            // Light orbit
+            pointLight1.position.x = Math.sin(time*0.5)*5;
+            pointLight1.position.z = Math.cos(time*0.5)*5+2;
+            pointLight2.position.x = Math.cos(time*0.7)*4;
+            pointLight2.position.y = Math.sin(time*0.7)*4;
 
             renderer.render(scene, camera);
         }
 
-        // Start animation
         animate();
+        log('INIT', 'Render loop started');
 
-        // Resize handler
+        // Resize
         window.addEventListener('resize', function() {
-            var w = threePanel.clientWidth;
-            var h = threePanel.clientHeight;
-            if (w > 0 && h > 0) {
-                renderer.setSize(w, h);
-                camera.aspect = w / h;
-                camera.updateProjectionMatrix();
-            }
+            var w = threePanel.clientWidth, h = threePanel.clientHeight;
+            if (w > 0 && h > 0) { renderer.setSize(w,h); camera.aspect=w/h; camera.updateProjectionMatrix(); }
         });
-
-        // Force a resize after a short delay to ensure correct sizing
         setTimeout(function() {
-            var w = threePanel.clientWidth;
-            var h = threePanel.clientHeight;
-            if (w > 0 && h > 0) {
-                renderer.setSize(w, h);
-                camera.aspect = w / h;
-                camera.updateProjectionMatrix();
-            }
+            var w = threePanel.clientWidth, h = threePanel.clientHeight;
+            if (w > 0 && h > 0) { renderer.setSize(w,h); camera.aspect=w/h; camera.updateProjectionMatrix(); }
         }, 100);
 
-    }); // end DOMContentLoaded
+    });
     </script>
 </body>
 </html>

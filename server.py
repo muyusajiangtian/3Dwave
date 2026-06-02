@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import math
 import time
 from collections import deque, Counter
 
@@ -15,170 +16,346 @@ from fastapi.responses import FileResponse
 
 app = FastAPI()
 
-# Initialize HandLandmarker
 base_options = mp_python.BaseOptions(model_asset_path='hand_landmarker.task')
 options = vision.HandLandmarkerOptions(
     base_options=base_options,
     running_mode=vision.RunningMode.IMAGE,
     num_hands=1,
-    min_hand_detection_confidence=0.6,
-    min_hand_presence_confidence=0.6,
-    min_tracking_confidence=0.5,
+    min_hand_detection_confidence=0.7,
+    min_hand_presence_confidence=0.7,
+    min_tracking_confidence=0.6,
 )
 hand_landmarker = vision.HandLandmarker.create_from_options(options)
 
+# ============================================================
+# Thresholds
+# ============================================================
+# Fist: weighted curl of all 5 fingers. Half-fist triggers at 0.32.
+FIST_CURL_THRESHOLD = 0.32
 
-PINCH_THRESHOLD = 0.055
-FIST_TIP_PALM_RATIO = 0.95
+# Pinch: thumb-index distance relative to palm size.
+# Pinch requires: distance < palm_size * PINCH_RATIO AND other 3 fingers NOT all curled.
+PINCH_RATIO = 0.45
 
+# Wave: cumulative displacement over 5 frames, speed > threshold
+WAVE_FRAMES = 5
+WAVE_SPEED_THRESHOLD = 0.45
+WAVE_COOLDOWN = 1.0  # seconds between wave triggers
 
-def dist(p1, p2):
-    return ((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2 + (p1.z - p2.z) ** 2) ** 0.5
+# Smoothing
+EMA_ALPHA = 0.35
 
+# MediaPipe handedness confidence filter
+MIN_HAND_CONFIDENCE = 0.65
 
-def vec(a, b):
-    return (b.x - a.x, b.y - a.y, b.z - a.z)
+# ============================================================
+# Geometry helpers
+# ============================================================
 
-
-def dot(u, v):
-    return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
-
-
-def mag(v):
-    return (v[0] ** 2 + v[1] ** 2 + v[2] ** 2) ** 0.5
-
-
-def is_finger_curled(tip, mcp, palm_center):
-    """A finger is curled if:
-    1. The fingertip is closer to the palm center than the MCP is (tip folded inward), OR
-    2. The tip-to-MCP distance is small relative to palm size (tip right next to its base).
-    Both conditions indicate the finger is folded toward the palm."""
-    tip_to_palm = dist(tip, palm_center)
-    mcp_to_palm = dist(mcp, palm_center)
-    tip_to_mcp = dist(tip, mcp)
-
-    if mcp_to_palm < 0.001:
-        return False
-
-    # Condition 1: tip is closer to palm center than MCP
-    if tip_to_palm < mcp_to_palm * FIST_TIP_PALM_RATIO:
-        return True
-
-    # Condition 2: tip is very close to its own MCP (compact fold)
-    if tip_to_mcp < mcp_to_palm * 0.6:
-        return True
-
-    return False
+def dist3(p1, p2):
+    return math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2 + (p1.z-p2.z)**2)
 
 
-class PalmCenter:
-    def __init__(self, x, y, z):
-        self.x = x
-        self.y = y
-        self.z = z
+def angle_at(a, b, c):
+    """Angle (radians) at vertex b in triangle a-b-c."""
+    ba = (a.x-b.x, a.y-b.y, a.z-b.z)
+    bc = (c.x-b.x, c.y-b.y, c.z-b.z)
+    dot_val = ba[0]*bc[0] + ba[1]*bc[1] + ba[2]*bc[2]
+    m1 = math.sqrt(ba[0]**2+ba[1]**2+ba[2]**2)
+    m2 = math.sqrt(bc[0]**2+bc[1]**2+bc[2]**2)
+    if m1 < 1e-7 or m2 < 1e-7:
+        return math.pi
+    return math.acos(max(-1.0, min(1.0, dot_val/(m1*m2))))
 
 
-def recognize_gesture_raw(landmarks, prev_positions):
-    """Classify gesture for a single frame (no smoothing)."""
-    wrist = landmarks[0]
-    thumb_tip = landmarks[4]
-    thumb_mcp = landmarks[2]
-    index_tip = landmarks[8]
-    index_mcp = landmarks[5]
-    middle_tip = landmarks[12]
-    middle_mcp = landmarks[9]
-    ring_tip = landmarks[16]
-    ring_mcp = landmarks[13]
-    pinky_tip = landmarks[20]
-    pinky_mcp = landmarks[17]
+# ============================================================
+# Per-finger curl computation
+# ============================================================
+# Landmark indices: [MCP, PIP, DIP, TIP]
+FINGERS = {
+    'thumb':  [1, 2, 3, 4],
+    'index':  [5, 6, 7, 8],
+    'middle': [9, 10, 11, 12],
+    'ring':   [13, 14, 15, 16],
+    'pinky':  [17, 18, 19, 20],
+}
 
-    palm_center = PalmCenter(
-        (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5,
-        (landmarks[0].y + landmarks[5].y + landmarks[9].y + landmarks[13].y + landmarks[17].y) / 5,
-        (landmarks[0].z + landmarks[5].z + landmarks[9].z + landmarks[13].z + landmarks[17].z) / 5,
-    )
+# Weighted importance for fist detection
+FIST_WEIGHTS = {'thumb': 0.12, 'index': 0.24, 'middle': 0.24, 'ring': 0.20, 'pinky': 0.20}
 
-    # --- Pinch: thumb tip to index tip distance below threshold ---
-    # Guard: at least one of middle/ring/pinky must be extended (not a fist)
-    pinch_distance = dist(thumb_tip, index_tip)
-    if pinch_distance < PINCH_THRESHOLD:
-        others_curled = sum([
-            is_finger_curled(middle_tip, middle_mcp, palm_center),
-            is_finger_curled(ring_tip, ring_mcp, palm_center),
-            is_finger_curled(pinky_tip, pinky_mcp, palm_center),
-        ])
-        if others_curled <= 1:
-            scale = max(0.3, min(3.0, 1.0 / (pinch_distance * 15 + 0.1)))
-            return {
-                "gesture": "pinch",
-                "scale": round(scale, 3),
-                "palm": {"x": wrist.x, "y": wrist.y, "z": wrist.z},
-            }
 
-    # --- Fist: all four fingers curled toward palm ---
-    fingers_curled = [
-        is_finger_curled(index_tip, index_mcp, palm_center),
-        is_finger_curled(middle_tip, middle_mcp, palm_center),
-        is_finger_curled(ring_tip, ring_mcp, palm_center),
-        is_finger_curled(pinky_tip, pinky_mcp, palm_center),
-    ]
-    thumb_curled = dist(thumb_tip, thumb_mcp) < dist(palm_center, thumb_mcp) * 0.9
+def finger_curl(landmarks, indices):
+    """Return curl value in [0,1]. 0=straight, 1=fully curled.
+    Based on PIP angle and DIP angle (smaller angle = more curled)."""
+    mcp, pip, dip, tip = [landmarks[i] for i in indices]
+    # For thumb, indices are CMC, MCP, IP, TIP
+    ang_pip = angle_at(mcp, pip, dip)
+    ang_dip = angle_at(pip, dip, tip)
+    # pi = straight (curl=0), small angle = curled (curl->1)
+    c_pip = 1.0 - ang_pip / math.pi
+    c_dip = 1.0 - ang_dip / math.pi
+    return c_pip * 0.55 + c_dip * 0.45
 
-    if sum(fingers_curled) >= 4 and thumb_curled:
-        rotation_x = (wrist.x - 0.5) * 3.14159 * 2
-        rotation_y = (wrist.y - 0.5) * 3.14159 * 2
-        return {
-            "gesture": "fist",
-            "rotation_x": round(rotation_x, 4),
-            "rotation_y": round(rotation_y, 4),
-            "palm": {"x": wrist.x, "y": wrist.y, "z": wrist.z},
+
+def compute_all_curls(landmarks):
+    """Returns dict of finger -> curl value."""
+    return {name: finger_curl(landmarks, idx) for name, idx in FINGERS.items()}
+
+
+def compute_fist_strength(curls):
+    """Weighted average of all finger curls."""
+    return sum(curls[f] * FIST_WEIGHTS[f] for f in FIST_WEIGHTS)
+
+
+def palm_size(landmarks):
+    """Distance from wrist to middle MCP as palm reference size."""
+    return dist3(landmarks[0], landmarks[9])
+
+
+# ============================================================
+# Gesture State Machine
+# ============================================================
+class GestureStateMachine:
+    """
+    States: none, fist, pinch, wave
+    Transitions require majority vote over N frames.
+    Wave has cooldown timer.
+    """
+    def __init__(self):
+        self.state = "none"
+        self.history = deque(maxlen=7)  # raw gesture per frame
+        self.wave_last_time = 0.0
+        self.frame_count = 0
+        # Position history for wave detection (x, timestamp)
+        self.pos_history = deque(maxlen=20)
+        # EMA values
+        self.ema_fist = None
+        self.ema_pinch_dist = None
+        self.ema_rot_x = None
+        self.ema_rot_y = None
+
+    def ema(self, prev, new, alpha=EMA_ALPHA):
+        if prev is None:
+            return new
+        return prev * (1.0 - alpha) + new * alpha
+
+    def update(self, landmarks):
+        """Process one frame. Returns gesture result dict with all debug info."""
+        self.frame_count += 1
+        now = time.time()
+
+        wrist = landmarks[0]
+        self.pos_history.append((wrist.x, wrist.y, now))
+
+        # --- Compute raw metrics ---
+        curls = compute_all_curls(landmarks)
+        fist_strength_raw = compute_fist_strength(curls)
+        p_size = palm_size(landmarks)
+
+        thumb_tip = landmarks[4]
+        index_tip = landmarks[8]
+        pinch_dist_raw = dist3(thumb_tip, index_tip)
+
+        # Normalized pinch distance (relative to palm size)
+        pinch_norm = pinch_dist_raw / p_size if p_size > 0.01 else 1.0
+
+        # --- EMA smooth continuous values ---
+        self.ema_fist = self.ema(self.ema_fist, fist_strength_raw)
+        self.ema_pinch_dist = self.ema(self.ema_pinch_dist, pinch_norm)
+        fist_strength = self.ema_fist
+        pinch_normalized = self.ema_pinch_dist
+
+        # --- Classify raw gesture for this frame ---
+        raw_gesture = self._classify_frame(
+            curls, fist_strength, pinch_normalized, p_size, now
+        )
+
+        # --- Majority vote (last 5 frames) ---
+        self.history.append(raw_gesture)
+        voted_gesture = self._majority_vote()
+
+        # --- State transition with hysteresis ---
+        final_gesture = self._apply_state_machine(voted_gesture, now)
+
+        # --- Compute output parameters ---
+        result = self._build_result(
+            final_gesture, landmarks, curls, fist_strength,
+            pinch_dist_raw, pinch_normalized, p_size, now
+        )
+
+        # --- Debug log ---
+        self._log_frame(curls, fist_strength_raw, fist_strength,
+                        pinch_dist_raw, pinch_normalized,
+                        raw_gesture, voted_gesture, final_gesture, result)
+
+        return result
+
+    def _classify_frame(self, curls, fist_strength, pinch_norm, p_size, now):
+        """Determine raw gesture for single frame. STRICT disambiguation."""
+
+        # === FIST CHECK ===
+        # Fist = ALL 5 fingers simultaneously curling toward palm
+        # Key: even half-fist (fist_strength >= threshold) triggers
+        # But we need ALL fingers contributing - no single finger can be too open
+        is_fist = False
+        if fist_strength >= FIST_CURL_THRESHOLD:
+            # Additional check: at least 4 of 5 fingers have curl > 0.2
+            curled_count = sum(1 for v in curls.values() if v > 0.2)
+            if curled_count >= 4:
+                is_fist = True
+
+        # === PINCH CHECK ===
+        # Pinch = thumb+index tips close, OTHER 3 fingers NOT curled toward palm
+        # Key distinction from fist: middle/ring/pinky must be RELAXED (not curled)
+        is_pinch = False
+        if pinch_norm < PINCH_RATIO:
+            # The other 3 fingers must NOT all be curled
+            # For pinch: middle, ring, pinky should be relatively extended
+            other_avg_curl = (curls['middle'] + curls['ring'] + curls['pinky']) / 3.0
+            # Pinch: other fingers average curl < 0.35 (relaxed/extended)
+            # Fist: other fingers average curl > 0.35 (all curling)
+            if other_avg_curl < 0.35:
+                is_pinch = True
+
+        # === DISAMBIGUATION ===
+        # If both could trigger, decide based on the clearer signal
+        if is_fist and is_pinch:
+            # Compare: if other fingers are quite curled, it's a fist
+            other_avg = (curls['middle'] + curls['ring'] + curls['pinky']) / 3.0
+            if other_avg > 0.25:
+                is_pinch = False  # Other fingers curling -> fist, not pinch
+            else:
+                is_fist = False   # Other fingers open -> pinch, not fist
+
+        if is_pinch:
+            return "pinch"
+        if is_fist:
+            return "fist"
+
+        # === WAVE CHECK ===
+        # Cumulative x-displacement over last 5 frames, with speed threshold
+        if len(self.pos_history) >= WAVE_FRAMES and fist_strength < 0.25:
+            recent = list(self.pos_history)[-WAVE_FRAMES:]
+            total_time = recent[-1][2] - recent[0][2]
+            if total_time > 0.05:
+                # Cumulative absolute x displacement
+                cum_disp = sum(abs(recent[i][0] - recent[i-1][0]) for i in range(1, len(recent)))
+                avg_speed = cum_disp / total_time
+
+                # Check x-range (must have actual oscillation, not just drift)
+                xs = [p[0] for p in recent]
+                x_range = max(xs) - min(xs)
+
+                # Direction changes in the window
+                dir_changes = 0
+                for i in range(2, len(xs)):
+                    if (xs[i]-xs[i-1]) * (xs[i-1]-xs[i-2]) < -0.0001:
+                        dir_changes += 1
+
+                if avg_speed > WAVE_SPEED_THRESHOLD and x_range > 0.06 and dir_changes >= 1:
+                    # Check cooldown
+                    if now - self.wave_last_time > WAVE_COOLDOWN:
+                        return "wave"
+
+        return "none"
+
+    def _majority_vote(self):
+        """5-frame majority vote from history."""
+        if len(self.history) < 3:
+            return self.history[-1] if self.history else "none"
+
+        # Use last 5 frames (or whatever is available up to 5)
+        window = list(self.history)[-5:]
+        counts = Counter(window)
+        winner, count = counts.most_common(1)[0]
+
+        # Require at least 3 out of 5 (or 2 out of 3 if less history)
+        threshold = max(2, len(window) // 2 + 1)
+        if count >= threshold:
+            return winner
+        # If no clear majority, stick with most recent that's not 'none'
+        for g in reversed(window):
+            if g != "none":
+                return g
+        return "none"
+
+    def _apply_state_machine(self, voted, now):
+        """Apply state transitions with minimum hold time."""
+        if voted == self.state:
+            return self.state
+
+        # Transition allowed - update state
+        if voted == "wave":
+            self.wave_last_time = now
+        self.state = voted
+        return voted
+
+    def _build_result(self, gesture, landmarks, curls, fist_strength,
+                      pinch_dist_raw, pinch_norm, p_size, now):
+        """Build the output JSON result."""
+        wrist = landmarks[0]
+        palm_cx = (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5
+        palm_cy = (landmarks[0].y + landmarks[5].y + landmarks[9].y + landmarks[13].y + landmarks[17].y) / 5
+        palm_cz = (landmarks[0].z + landmarks[5].z + landmarks[9].z + landmarks[13].z + landmarks[17].z) / 5
+
+        result = {
+            "gesture": gesture,
+            "fist_strength": round(fist_strength, 4),
+            "pinch_distance": round(pinch_dist_raw, 4),
+            "pinch_normalized": round(pinch_norm, 4),
+            "confidence": 0.0,
+            "palm": {"x": round(palm_cx, 4), "y": round(palm_cy, 4), "z": round(palm_cz, 4)},
+            "frame_id": self.frame_count,
+            "curls": {k: round(v, 3) for k, v in curls.items()},
         }
 
-    # --- Wave: open hand with lateral oscillation ---
-    if len(prev_positions) >= 6:
-        x_positions = [p[0] for p in prev_positions]
-        x_range = max(x_positions) - min(x_positions)
-        if x_range > 0.13:
-            direction_changes = 0
-            for i in range(2, len(x_positions)):
-                d1 = x_positions[i - 1] - x_positions[i - 2]
-                d2 = x_positions[i] - x_positions[i - 1]
-                if d1 * d2 < -0.0001:
-                    direction_changes += 1
-            all_extended = sum(fingers_curled) <= 1
-            if direction_changes >= 2 and all_extended:
-                return {
-                    "gesture": "wave",
-                    "palm": {"x": wrist.x, "y": wrist.y, "z": wrist.z},
-                }
+        if gesture == "fist":
+            rot_x_raw = (wrist.x - 0.5) * math.pi * 2
+            rot_y_raw = (wrist.y - 0.5) * math.pi * 2
+            self.ema_rot_x = self.ema(self.ema_rot_x, rot_x_raw, 0.5)
+            self.ema_rot_y = self.ema(self.ema_rot_y, rot_y_raw, 0.5)
+            result["rotation_x"] = round(self.ema_rot_x, 4)
+            result["rotation_y"] = round(self.ema_rot_y, 4)
+            result["confidence"] = round(min(1.0, (fist_strength - FIST_CURL_THRESHOLD) / 0.4), 3)
 
-    return {
-        "gesture": "none",
-        "palm": {"x": wrist.x, "y": wrist.y, "z": wrist.z},
-    }
+        elif gesture == "pinch":
+            pinch_intensity = max(0.0, 1.0 - pinch_norm / PINCH_RATIO)
+            scale = max(0.3, min(3.0, 1.0 / (pinch_dist_raw * 12 + 0.1)))
+            result["pinch_intensity"] = round(pinch_intensity, 3)
+            result["scale"] = round(scale, 3)
+            result["confidence"] = round(min(1.0, pinch_intensity + 0.3), 3)
+
+        elif gesture == "wave":
+            # Compute speed for display
+            if len(self.pos_history) >= WAVE_FRAMES:
+                recent = list(self.pos_history)[-WAVE_FRAMES:]
+                dt = recent[-1][2] - recent[0][2]
+                if dt > 0:
+                    cum = sum(abs(recent[i][0]-recent[i-1][0]) for i in range(1,len(recent)))
+                    result["palm_speed"] = round(cum/dt, 3)
+            result["confidence"] = 0.8
+
+        return result
+
+    def _log_frame(self, curls, fist_raw, fist_ema, pinch_raw, pinch_norm,
+                   raw_g, voted_g, final_g, result):
+        """Print detailed debug info every frame."""
+        curl_str = " ".join(f"{k[0].upper()}:{v:.2f}" for k, v in curls.items())
+        other_avg = (curls['middle'] + curls['ring'] + curls['pinky']) / 3.0
+        print(
+            f"[F{self.frame_count:04d}] "
+            f"curls=[{curl_str}] "
+            f"fist={fist_raw:.3f}->{fist_ema:.3f} "
+            f"pinch_d={pinch_raw:.4f} pinch_n={pinch_norm:.3f} "
+            f"other_avg={other_avg:.3f} | "
+            f"raw={raw_g} vote={voted_g} final={final_g} "
+            f"conf={result.get('confidence', 0):.2f}"
+        )
 
 
-def smooth_gesture(raw_result, gesture_history):
-    """Apply 3-frame majority voting to reduce jitter.
-    For continuous parameters (rotation, scale), use the current frame's values
-    when that gesture wins the vote."""
-    gesture_history.append(raw_result["gesture"])
-
-    if len(gesture_history) < 3:
-        return raw_result
-
-    last3 = [gesture_history[-1], gesture_history[-2], gesture_history[-3]]
-    vote = Counter(last3).most_common(1)[0]
-    winner = vote[0]
-
-    if winner == raw_result["gesture"]:
-        return raw_result
-
-    result = dict(raw_result)
-    result["gesture"] = winner
-    return result
-
-
+# ============================================================
+# FastAPI endpoints
+# ============================================================
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
@@ -190,10 +367,10 @@ async def root():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    prev_positions = deque(maxlen=12)
+    print("[WS] Client connected")
+
+    gsm = GestureStateMachine()
     palm_trail = deque(maxlen=15)
-    gesture_history = deque(maxlen=5)
-    raw_results_history = deque(maxlen=5)
 
     try:
         while True:
@@ -206,7 +383,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
                 if frame is None:
-                    await websocket.send_json({"gesture": "none", "palm": None, "trail": []})
+                    await websocket.send_json({
+                        "gesture": "none", "palm": None,
+                        "trail": [], "confidence": 0.0, "fist_strength": 0.0
+                    })
                     continue
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -214,48 +394,67 @@ async def websocket_endpoint(websocket: WebSocket):
                 results = hand_landmarker.detect(mp_image)
 
                 if results.hand_landmarks and len(results.hand_landmarks) > 0:
+                    # Filter by handedness confidence
+                    if results.handedness and len(results.handedness) > 0:
+                        hand_conf = results.handedness[0][0].score
+                        if hand_conf < MIN_HAND_CONFIDENCE:
+                            print(f"[F{gsm.frame_count+1:04d}] LOW CONFIDENCE hand={hand_conf:.3f}, skipping")
+                            await websocket.send_json({
+                                "gesture": gsm.state,
+                                "palm": None, "trail": [],
+                                "confidence": 0.0, "fist_strength": 0.0,
+                                "frame_id": gsm.frame_count
+                            })
+                            continue
+
                     landmarks = results.hand_landmarks[0]
-
-                    wrist = landmarks[0]
-                    prev_positions.append((wrist.x, wrist.y, time.time()))
-
-                    palm_center_x = (landmarks[0].x + landmarks[5].x + landmarks[17].x) / 3
-                    palm_center_y = (landmarks[0].y + landmarks[5].y + landmarks[17].y) / 3
-                    palm_center_z = (landmarks[0].z + landmarks[5].z + landmarks[17].z) / 3
-                    palm_trail.append({
-                        "x": round(palm_center_x, 4),
-                        "y": round(palm_center_y, 4),
-                        "z": round(palm_center_z, 4),
-                        "t": time.time(),
-                    })
-
                     now = time.time()
+
+                    # Update palm trail
+                    pcx = (landmarks[0].x + landmarks[5].x + landmarks[17].x) / 3
+                    pcy = (landmarks[0].y + landmarks[5].y + landmarks[17].y) / 3
+                    pcz = (landmarks[0].z + landmarks[5].z + landmarks[17].z) / 3
+                    palm_trail.append({"x": round(pcx,4), "y": round(pcy,4), "z": round(pcz,4), "t": now})
                     trail_points = [p for p in palm_trail if now - p["t"] < 0.5]
 
-                    raw_result = recognize_gesture_raw(landmarks, prev_positions)
-                    raw_results_history.append(raw_result)
-                    gesture_data = smooth_gesture(raw_result, gesture_history)
+                    # Run state machine
+                    gesture_data = gsm.update(landmarks)
                     gesture_data["trail"] = trail_points
 
-                    all_points = []
-                    for lm in landmarks:
-                        all_points.append({
-                            "x": round(lm.x, 4),
-                            "y": round(lm.y, 4),
-                            "z": round(lm.z, 4),
-                        })
-                    gesture_data["landmarks"] = all_points
+                    # Send landmarks for hand overlay
+                    gesture_data["landmarks"] = [
+                        {"x": round(lm.x,4), "y": round(lm.y,4), "z": round(lm.z,4)}
+                        for lm in landmarks
+                    ]
 
                     await websocket.send_json(gesture_data)
                 else:
-                    prev_positions.clear()
-                    gesture_history.append("none")
-                    await websocket.send_json({"gesture": "none", "palm": None, "trail": []})
+                    # No hand detected - reset state machine smoothly
+                    gsm.pos_history.clear()
+                    gsm.history.append("none")
+                    if len(gsm.history) >= 3:
+                        # Only transition to none after majority says so
+                        recent = list(gsm.history)[-3:]
+                        if recent.count("none") >= 2:
+                            gsm.state = "none"
+                    gsm.ema_fist = None
+                    gsm.ema_pinch_dist = None
+                    gsm.ema_rot_x = None
+                    gsm.ema_rot_y = None
+                    gsm.frame_count += 1
+                    await websocket.send_json({
+                        "gesture": gsm.state,
+                        "palm": None, "trail": [],
+                        "confidence": 0.0, "fist_strength": 0.0,
+                        "frame_id": gsm.frame_count
+                    })
 
     except WebSocketDisconnect:
-        pass
+        print("[WS] Client disconnected")
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        print(f"[WS] Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
