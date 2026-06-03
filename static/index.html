@@ -198,6 +198,170 @@
             border-radius: 3px;
             transition: width 0.1s;
         }
+        /* === 语音控制按钮 === */
+        #voice-toggle {
+            position: absolute;
+            bottom: 15px; left: 15px;
+            width: 42px; height: 42px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.6);
+            color: #888;
+            font-size: 18px;
+            cursor: pointer;
+            z-index: 20;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #voice-toggle:hover { border-color: rgba(255,255,255,0.5); }
+        #voice-toggle.active {
+            color: #4ade80;
+            border-color: #4ade80;
+            box-shadow: 0 0 12px rgba(74,222,128,0.4);
+            animation: voice-pulse 1.5s infinite;
+        }
+        @keyframes voice-pulse {
+            0%, 100% { box-shadow: 0 0 12px rgba(74,222,128,0.4); }
+            50% { box-shadow: 0 0 20px rgba(74,222,128,0.7); }
+        }
+        /* === 调试面板按钮 === */
+        #debug-toggle {
+            position: absolute;
+            bottom: 15px; left: 65px;
+            width: 42px; height: 42px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.6);
+            color: #888;
+            font-size: 16px;
+            cursor: pointer;
+            z-index: 20;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #debug-toggle:hover { border-color: rgba(255,255,255,0.5); color: #fff; }
+        #debug-toggle.active { color: #fbbf24; border-color: #fbbf24; }
+        /* === 序列识别状态 === */
+        #sequence-status {
+            position: absolute;
+            top: 45px; left: 50%;
+            transform: translateX(-50%);
+            font-size: 14px;
+            font-weight: bold;
+            color: #4ade80;
+            background: rgba(0,0,0,0.7);
+            padding: 6px 16px;
+            border-radius: 20px;
+            border: 1px solid rgba(74,222,128,0.3);
+            z-index: 25;
+            display: none;
+            transition: opacity 0.5s;
+            white-space: nowrap;
+        }
+        /* === 调试面板样式 === */
+        #debug-container {
+            position: absolute;
+            right: 10px; bottom: 65px;
+            width: 380px;
+            max-height: 70vh;
+            z-index: 50;
+            pointer-events: auto;
+        }
+        .dp-panel {
+            background: rgba(10, 10, 20, 0.92);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+        }
+        .dp-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: rgba(255,255,255,0.05);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .dp-title { font-size: 12px; font-weight: bold; color: #e2e8f0; }
+        .dp-close {
+            background: none; border: none; color: #94a3b8; font-size: 16px;
+            cursor: pointer; padding: 2px 6px; border-radius: 4px;
+        }
+        .dp-close:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        .dp-body {
+            padding: 8px 12px;
+            max-height: 55vh;
+            overflow-y: auto;
+            font-size: 11px;
+        }
+        .dp-body::-webkit-scrollbar { width: 4px; }
+        .dp-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
+        .dp-section {
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .dp-section:last-child { border-bottom: none; margin-bottom: 0; }
+        .dp-section-title {
+            font-size: 10px; font-weight: bold; color: #94a3b8;
+            text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;
+        }
+        .dp-gesture-stream {
+            display: flex; flex-wrap: wrap; gap: 3px; align-items: center;
+            min-height: 24px; padding: 4px 0;
+        }
+        .dp-seg { font-size: 11px; display: inline-flex; align-items: center; gap: 2px; }
+        .dp-seg small { font-size: 9px; opacity: 0.7; }
+        .dp-arrow { color: #475569; font-size: 10px; margin: 0 1px; }
+        .dp-sequence-name {
+            font-size: 12px; font-weight: bold; color: #4ade80;
+            padding: 3px 0; transition: opacity 0.5s;
+        }
+        .dp-voice-status { font-size: 11px; margin-bottom: 4px; }
+        .dp-speech-interim {
+            font-size: 11px; color: #fbbf24; font-style: italic;
+            padding: 2px 0; margin-bottom: 3px;
+        }
+        .dp-speech-logs, .dp-fusion-logs { max-height: 100px; overflow-y: auto; }
+        .dp-speech-entry, .dp-fusion-entry {
+            font-size: 10px; padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+            color: #cbd5e1;
+        }
+        .dp-time { color: #64748b; }
+        .dp-speech-text { color: #e2e8f0; }
+        .dp-conf { color: #94a3b8; font-size: 9px; }
+        .dp-intent { color: #a78bfa; font-weight: bold; }
+        .dp-setting { margin-bottom: 6px; }
+        .dp-setting label { font-size: 10px; color: #94a3b8; }
+        .dp-slider {
+            width: 100%; height: 4px; margin-top: 4px;
+            -webkit-appearance: none; appearance: none;
+            background: rgba(255,255,255,0.1); border-radius: 2px; outline: none;
+        }
+        .dp-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none;
+            width: 12px; height: 12px; border-radius: 50%;
+            background: #8b5cf6; cursor: pointer;
+        }
+        .dp-radio-group { display: flex; gap: 8px; margin-top: 3px; flex-wrap: wrap; }
+        .dp-radio-group label { font-size: 10px; color: #94a3b8; cursor: pointer; display: flex; align-items: center; gap: 3px; }
+        .dp-radio-group input { margin: 0; }
+        .dp-actions { display: flex; gap: 6px; margin-top: 6px; }
+        .dp-btn {
+            font-size: 10px; padding: 4px 10px; border-radius: 4px;
+            border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05);
+            color: #e2e8f0; cursor: pointer; transition: all 0.2s;
+        }
+        .dp-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.3); }
+        .dp-btn-recording {
+            border-color: #ef4444; color: #ef4444;
+            animation: rec-blink 1s infinite;
+        }
+        @keyframes rec-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
     </style>
 </head>
 <body>
@@ -231,11 +395,20 @@
             <div id="reset-indicator">RESET</div>
             <div id="proximity-bar"><div id="proximity-fill"></div></div>
             <div id="error-display"></div>
+            <div id="sequence-status"></div>
+            <button id="voice-toggle" title="语音控制 (点击启用)">🎤</button>
+            <button id="debug-toggle" title="调试面板">🔧</button>
+            <div id="debug-container"></div>
         </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.min.js"></script>
     <script>if (typeof THREE === 'undefined') document.write('<script src="/static/three.min.js"><\/script>');</script>
+    <!-- 多模态交互模块 -->
+    <script src="/static/js/gesture-sequence.js"></script>
+    <script src="/static/js/voice-recognition.js"></script>
+    <script src="/static/js/multimodal-fusion.js"></script>
+    <script src="/static/js/debug-panel.js"></script>
     <script>
     window.addEventListener('DOMContentLoaded', function() {
         if (typeof THREE === 'undefined') {
@@ -345,7 +518,7 @@
         var proximityFill = document.getElementById('proximity-fill');
 
         var GESTURE_ICONS = {
-            'none': '--',
+            'none': '— 未检测到手势',
             'fist': '✊ Fist',
             'pinch': '🤏 Pinch',
             'wave': '👋 Wave',
@@ -377,14 +550,21 @@
 
         var isSingleHandMode = false;
 
+        // 防抖：记录上次UI显示值，仅在变化时更新DOM
+        var _prevLeftGesture = '--', _prevLeftConf = '', _prevLeftDigit = '';
+        var _prevRightGesture = '--', _prevRightConf = '', _prevRightDigit = '';
+        var _prevDualStatus = '';
+
         function handleMessage(data) {
             if (data.type === 'no_hand') {
-                leftGestureEl.textContent = '--';
-                rightGestureEl.textContent = '--';
-                leftConfEl.textContent = 'conf: --';
-                rightConfEl.textContent = 'conf: --';
-                leftDigitEl.textContent = '';
-                rightDigitEl.textContent = '';
+                var noHandText = '— 未检测到手势';
+                if (_prevLeftGesture !== noHandText) { leftGestureEl.textContent = noHandText; _prevLeftGesture = noHandText; }
+                if (_prevRightGesture !== noHandText) { rightGestureEl.textContent = noHandText; _prevRightGesture = noHandText; }
+                var noConf = '等待检测...';
+                if (_prevLeftConf !== noConf) { leftConfEl.textContent = noConf; _prevLeftConf = noConf; }
+                if (_prevRightConf !== noConf) { rightConfEl.textContent = noConf; _prevRightConf = noConf; }
+                if (_prevLeftDigit !== '') { leftDigitEl.textContent = ''; _prevLeftDigit = ''; }
+                if (_prevRightDigit !== '') { rightDigitEl.textContent = ''; _prevRightDigit = ''; }
                 dualStatusEl.style.display = 'none';
                 proximityBar.style.display = 'none';
                 currentLeftGesture = 'none';
@@ -396,45 +576,47 @@
 
             isSingleHandMode = (data.type === 'single');
 
-            // Update left hand UI
+            // Update left hand UI（仅在变化时写DOM）
             if (data.left) {
                 currentLeftGesture = data.left.gesture;
-                leftGestureEl.textContent = GESTURE_ICONS[data.left.gesture] || data.left.gesture;
-                var lconf = (data.left.confidence || 0).toFixed(2);
-                var lhconf = (data.left.hand_confidence || 0).toFixed(2);
-                var lspeed = (data.left.palm_speed || 0).toFixed(2);
-                leftConfEl.textContent = 'conf:' + lconf + ' hand:' + lhconf + ' spd:' + lspeed;
+                var lgText = GESTURE_ICONS[data.left.gesture] || data.left.gesture;
+                if (lgText !== _prevLeftGesture) { leftGestureEl.textContent = lgText; _prevLeftGesture = lgText; }
+                var lconf = 'conf:' + (data.left.confidence || 0).toFixed(2) + ' hand:' + (data.left.hand_confidence || 0).toFixed(2) + ' spd:' + (data.left.palm_speed || 0).toFixed(2);
+                if (lconf !== _prevLeftConf) { leftConfEl.textContent = lconf; _prevLeftConf = lconf; }
                 if (data.left.digit !== undefined) {
                     var fstr = data.left.fingers ? formatFingers(data.left.fingers) : '';
-                    leftDigitEl.textContent = '🔢 ' + data.left.digit + ' ' + fstr;
+                    var ldText = '🔢 ' + data.left.digit + ' ' + fstr;
+                    if (ldText !== _prevLeftDigit) { leftDigitEl.textContent = ldText; _prevLeftDigit = ldText; }
                 } else {
-                    leftDigitEl.textContent = '';
+                    if (_prevLeftDigit !== '') { leftDigitEl.textContent = ''; _prevLeftDigit = ''; }
                 }
             } else {
-                leftGestureEl.textContent = '--';
-                leftConfEl.textContent = 'conf: --';
-                leftDigitEl.textContent = '';
+                var lNoHand = '— 未检测到手势';
+                if (_prevLeftGesture !== lNoHand) { leftGestureEl.textContent = lNoHand; _prevLeftGesture = lNoHand; }
+                if (_prevLeftConf !== '等待检测...') { leftConfEl.textContent = '等待检测...'; _prevLeftConf = '等待检测...'; }
+                if (_prevLeftDigit !== '') { leftDigitEl.textContent = ''; _prevLeftDigit = ''; }
                 currentLeftGesture = 'none';
             }
 
-            // Update right hand UI
+            // Update right hand UI（仅在变化时写DOM）
             if (data.right) {
                 currentRightGesture = data.right.gesture;
-                rightGestureEl.textContent = GESTURE_ICONS[data.right.gesture] || data.right.gesture;
-                var rconf = (data.right.confidence || 0).toFixed(2);
-                var rhconf = (data.right.hand_confidence || 0).toFixed(2);
-                var rspeed = (data.right.palm_speed || 0).toFixed(2);
-                rightConfEl.textContent = 'conf:' + rconf + ' hand:' + rhconf + ' spd:' + rspeed;
+                var rgText = GESTURE_ICONS[data.right.gesture] || data.right.gesture;
+                if (rgText !== _prevRightGesture) { rightGestureEl.textContent = rgText; _prevRightGesture = rgText; }
+                var rconf = 'conf:' + (data.right.confidence || 0).toFixed(2) + ' hand:' + (data.right.hand_confidence || 0).toFixed(2) + ' spd:' + (data.right.palm_speed || 0).toFixed(2);
+                if (rconf !== _prevRightConf) { rightConfEl.textContent = rconf; _prevRightConf = rconf; }
                 if (data.right.digit !== undefined) {
                     var fstr2 = data.right.fingers ? formatFingers(data.right.fingers) : '';
-                    rightDigitEl.textContent = '🔢 ' + data.right.digit + ' ' + fstr2;
+                    var rdText = '🔢 ' + data.right.digit + ' ' + fstr2;
+                    if (rdText !== _prevRightDigit) { rightDigitEl.textContent = rdText; _prevRightDigit = rdText; }
                 } else {
-                    rightDigitEl.textContent = '';
+                    if (_prevRightDigit !== '') { rightDigitEl.textContent = ''; _prevRightDigit = ''; }
                 }
             } else {
-                rightGestureEl.textContent = '--';
-                rightConfEl.textContent = 'conf: --';
-                rightDigitEl.textContent = '';
+                var rNoHand = '— 未检测到手势';
+                if (_prevRightGesture !== rNoHand) { rightGestureEl.textContent = rNoHand; _prevRightGesture = rNoHand; }
+                if (_prevRightConf !== '等待检测...') { rightConfEl.textContent = '等待检测...'; _prevRightConf = '等待检测...'; }
+                if (_prevRightDigit !== '') { rightDigitEl.textContent = ''; _prevRightDigit = ''; }
                 currentRightGesture = 'none';
             }
 
@@ -442,8 +624,12 @@
             if (isSingleHandMode) {
                 var singleData = data.left || data.right;
                 if (singleData) processSingleHand(singleData);
-                dualStatusEl.style.display = 'block';
-                dualStatusEl.textContent = '✋ Single Hand: ' + (data.single_hand || '?');
+                var singleText = '✋ Single Hand: ' + (data.single_hand || '?');
+                if (singleText !== _prevDualStatus) {
+                    dualStatusEl.style.display = 'block';
+                    dualStatusEl.textContent = singleText;
+                    _prevDualStatus = singleText;
+                }
                 proximityBar.style.display = 'none';
             } else {
                 // Dual hand mode
@@ -961,6 +1147,256 @@
             var w = threePanel.clientWidth, h = threePanel.clientHeight;
             if (w > 0 && h > 0) { renderer.setSize(w,h); camera.aspect=w/h; camera.updateProjectionMatrix(); }
         }, 100);
+
+        // ============================================================
+        // 多模态交互系统集成
+        // ============================================================
+
+        // === 材质系统（用于切换材质命令） ===
+        var materialIndex = 0;
+        var MATERIALS = [
+            { name: '标准', metalness: 0.3, roughness: 0.4, opacity: 0.9 },
+            { name: '金属', metalness: 0.9, roughness: 0.1, opacity: 1.0 },
+            { name: '玻璃', metalness: 0.1, roughness: 0.05, opacity: 0.5 },
+            { name: '陶瓷', metalness: 0.0, roughness: 0.8, opacity: 1.0 },
+            { name: '霓虹', metalness: 0.5, roughness: 0.3, opacity: 0.85 }
+        ];
+
+        function cycleMaterial() {
+            materialIndex = (materialIndex + 1) % MATERIALS.length;
+            var mat = MATERIALS[materialIndex];
+            torusMat.metalness = mat.metalness;
+            torusMat.roughness = mat.roughness;
+            torusMat.opacity = mat.opacity;
+            torusMat.needsUpdate = true;
+        }
+
+        // === 手势序列识别器 ===
+        var gestureSeq = new GestureSequenceRecognizer({
+            matchThreshold: 0.55,
+            bufferSize: 80,
+            checkInterval: 4
+        });
+
+        // === 语音识别器 ===
+        var voiceRecog = new VoiceCommandRecognizer({ lang: 'zh-CN' });
+
+        // === 多模态融合引擎 ===
+        var fusion = new MultimodalFusion({
+            timeWindow: 500,
+            priorityMode: 'recent',
+            executeCooldown: 800
+        });
+
+        // === 调试面板 ===
+        var debugPanel = new DebugPanel('debug-container');
+        debugPanel.init();
+
+        // === 意图执行器 ===
+        function executeIntent(intent) {
+            switch (intent) {
+                case 'switch_material':
+                    cycleMaterial();
+                    break;
+                case 'reset_view':
+                    triggerReset();
+                    break;
+                case 'show_help':
+                    debugPanel.toggle();
+                    break;
+                case 'zoom_in':
+                    targetScale = Math.min(3.0, targetScale * 1.3);
+                    break;
+                case 'zoom_out':
+                    targetScale = Math.max(0.3, targetScale * 0.7);
+                    break;
+                case 'rotate_left':
+                    targetRotY -= 0.5;
+                    break;
+                case 'rotate_right':
+                    targetRotY += 0.5;
+                    break;
+                case 'change_color':
+                    colorIndex = (colorIndex + 1) % COLORS.length;
+                    triggerColorChange();
+                    playWhoosh();
+                    break;
+                case 'explode':
+                    triggerExplosion();
+                    playExplosion();
+                    break;
+                case 'toggle_wireframe':
+                    wireframe.visible = !wireframe.visible;
+                    break;
+                case 'particle_burst':
+                    emitWaveParticles(1.0);
+                    break;
+                case 'stop':
+                    // 停止自动旋转（通过将当前旋转设为目标）
+                    targetRotX = torusKnot.rotation.x;
+                    targetRotY = torusKnot.rotation.y;
+                    break;
+            }
+        }
+
+        // === 事件接线 ===
+
+        // 手势序列 → 融合引擎 + 调试面板
+        gestureSeq.onSequenceRecognized(function(name, confidence, action) {
+            fusion.feedGestureEvent(action, confidence, Date.now());
+            debugPanel.updateSequenceName(name, confidence);
+        });
+
+        // 语音 → 融合引擎 + 调试面板
+        voiceRecog.onCommand(function(intent, confidence, rawText, timestamp) {
+            fusion.feedVoiceEvent(intent, confidence, timestamp);
+            debugPanel.addSpeechText(rawText, true, confidence);
+        });
+        voiceRecog.onInterim(function(text) {
+            debugPanel.addSpeechText(text, false, null);
+        });
+        voiceRecog.onStateChange(function(active) {
+            debugPanel.updateVoiceState(active);
+            var btn = document.getElementById('voice-toggle');
+            if (btn) {
+                btn.className = active ? 'active' : '';
+            }
+        });
+        voiceRecog.onError(function(errorCode, message) {
+            // 在错误显示区域显示语音错误
+            var errEl = document.getElementById('error-display');
+            if (errEl) {
+                errEl.textContent = '🎤 ' + message;
+                errEl.style.display = 'block';
+                setTimeout(function() { errEl.style.display = 'none'; }, 5000);
+            }
+            // 更新按钮状态
+            var btn = document.getElementById('voice-toggle');
+            if (btn) {
+                btn.className = '';
+                btn.title = '语音不可用: ' + message;
+            }
+            debugPanel.updateVoiceState(false);
+            console.error('[Voice] ' + errorCode + ': ' + message);
+        });
+
+        // 语音不支持时的降级显示
+        if (!voiceRecog.isSupported()) {
+            var voiceBtn = document.getElementById('voice-toggle');
+            if (voiceBtn) {
+                voiceBtn.title = '语音不支持（需Chrome/Edge浏览器）';
+                voiceBtn.style.opacity = '0.4';
+                voiceBtn.style.cursor = 'not-allowed';
+            }
+            debugPanel.updateVoiceState(false);
+        }
+
+        // 融合引擎 → 动作执行 + 调试面板
+        fusion.onAction(function(intent, source, confidence, logEntry) {
+            debugPanel.addFusionLog(logEntry);
+            executeIntent(intent);
+        });
+
+        // === 调试面板事件 ===
+        debugPanel.on('thresholdChange', function(value) {
+            gestureSeq.setThreshold(value);
+        });
+        debugPanel.on('priorityChange', function(mode) {
+            fusion.setPriorityMode(mode);
+        });
+        debugPanel.on('recordToggle', function() {
+            if (gestureSeq.isRecording()) {
+                var name = prompt('请输入手势序列名称:');
+                if (name) {
+                    var action = prompt('请输入触发动作（如 switch_material, change_color, explode）:', 'change_color');
+                    if (action) {
+                        var ok = gestureSeq.stopRecording(name, action);
+                        if (!ok) {
+                            alert('录制失败：序列太短或已达上限(5个)');
+                        }
+                    } else {
+                        gestureSeq.stopRecording(name, 'change_color');
+                    }
+                } else {
+                    // 取消录制
+                    gestureSeq._isRecording = false;
+                    gestureSeq._recordBuffer = [];
+                }
+                debugPanel.updateRecordingState(false, gestureSeq.getCustomCount());
+            } else {
+                gestureSeq.startRecording();
+                debugPanel.updateRecordingState(true, gestureSeq.getCustomCount());
+            }
+        });
+        debugPanel.on('clearTemplates', function() {
+            if (confirm('确定清空所有自定义手势模板？')) {
+                var templates = gestureSeq.getTemplates();
+                templates.forEach(function(t) {
+                    if (t.custom) gestureSeq.removeCustomTemplate(t.name);
+                });
+                debugPanel.updateRecordingState(false, 0);
+            }
+        });
+
+        // === 语音控制按钮 ===
+        var voiceToggleBtn = document.getElementById('voice-toggle');
+        if (voiceToggleBtn) {
+            voiceToggleBtn.addEventListener('click', function() {
+                if (!voiceRecog.isSupported()) {
+                    var errEl = document.getElementById('error-display');
+                    if (errEl) {
+                        errEl.textContent = '🎤 语音不支持：请使用Chrome或Edge浏览器';
+                        errEl.style.display = 'block';
+                        setTimeout(function() { errEl.style.display = 'none'; }, 4000);
+                    }
+                    return;
+                }
+                if (voiceRecog.isActive()) {
+                    voiceRecog.stop();
+                } else {
+                    voiceRecog.start();
+                }
+            });
+        }
+
+        // === 调试面板切换按钮 ===
+        var debugToggleBtn = document.getElementById('debug-toggle');
+        if (debugToggleBtn) {
+            debugToggleBtn.addEventListener('click', function() {
+                debugPanel.toggle();
+                debugToggleBtn.className = debugPanel.isVisible() ? 'active' : '';
+            });
+        }
+
+        // === 将手势数据馈入序列识别器（在handleMessage中集成） ===
+        var _origHandleMessage = handleMessage;
+        handleMessage = function(data) {
+            _origHandleMessage(data);
+
+            // 提取当前帧的主手势馈入序列识别器
+            var gesture = 'none';
+            if (data.type === 'single') {
+                var sd = data.left || data.right;
+                if (sd) gesture = sd.gesture;
+            } else if (data.type === 'dual') {
+                // 双手模式：优先使用右手手势
+                if (data.right && data.right.gesture !== 'none') {
+                    gesture = data.right.gesture;
+                } else if (data.left && data.left.gesture !== 'none') {
+                    gesture = data.left.gesture;
+                }
+            }
+
+            gestureSeq.feedGesture(gesture, Date.now());
+
+            // 更新调试面板手势流（节流由面板内部控制）
+            if (debugPanel.isVisible()) {
+                debugPanel.updateGestureStream(gestureSeq.getRecentSegments());
+            }
+        };
+
+        // 初始化调试面板模板计数
+        debugPanel.updateRecordingState(false, gestureSeq.getCustomCount());
     });
     </script>
 </body>

@@ -1,155 +1,223 @@
-# Magic Gesture 3D Controller - Dual Hand
+# Magic Gesture 3D Controller - Multimodal Edition
 
-Real-time hand gesture recognition system that controls interactive 3D visuals using webcam input. Supports **dual-hand collaborative interaction** with independent left/right hand tracking and coordinated two-hand gestures.
+实时手势识别控制交互式3D模型系统，支持**双手协同交互**、**连续手势序列识别（DTW）**和**语音-手势多模态融合控制**。
 
-## Features
+Real-time hand gesture recognition system that controls interactive 3D visuals using webcam input. Supports **dual-hand collaborative interaction**, **continuous gesture sequence recognition (DTW)**, and **voice-gesture multimodal fusion control**.
 
-### Single-Hand Gestures
+## 功能特性 / Features
 
-| Gesture | Hand | Action |
+### 基础手势控制 / Basic Gesture Control
+
+| 手势 Gesture | 手 Hand | 动作 Action |
 |---------|------|--------|
-| Fist (Left) | Left | Horizontal rotation of 3D model |
-| Fist (Right) | Right | Vertical flip/tilt of 3D model |
-| Pinch (Right) | Right | Model scale control + particle wave effect |
-| Wave (Left) | Left | Color change with pulse ring effect |
-| Wave (Right) | Right | Particle explosion effect |
-| Pointing | Either | Used for dual-hand zoom (see below) |
+| 握拳 Fist (Left) | 左手 Left | 水平旋转3D模型 / Horizontal rotation |
+| 握拳 Fist (Right) | 右手 Right | 垂直翻转3D模型 / Vertical tilt |
+| 捏合 Pinch (Right) | 右手 Right | 缩放控制+粒子波动 / Scale + particle wave |
+| 挥手 Wave (Left) | 左手 Left | 颜色切换+脉冲环 / Color change + pulse ring |
+| 挥手 Wave (Right) | 右手 Right | 粒子爆炸效果 / Particle explosion |
+| 指向 Pointing | 双手 Both | 双手缩放 / Dual-hand zoom |
 
-### Dual-Hand Gestures
+### 双手协同 / Dual-Hand Coordination
 
-| Gesture | Action |
+| 手势 Gesture | 动作 Action |
 |---------|--------|
-| Both hands pointing (index finger) | Pinch-to-zoom by finger distance |
-| Palms close together (< palm width) for 1 second | Reset model to initial position and size |
+| 双手指向 Both pointing | 双指距离缩放 / Pinch-to-zoom |
+| 双掌靠近1秒 Palms close 1s | 重置模型 / Reset model |
 
-### Additional Features
+### 🆕 连续手势序列识别 / Gesture Sequence Recognition
 
-- **Digit Recognition**: Real-time count of extended fingers (0-5) displayed for each hand
-- **Independent State Machines**: Left and right hands have separate gesture state machines with individual majority-vote filtering and transition cooldowns, preventing cross-hand interference
-- **Anti-Jitter**: EMA smoothing, majority voting (5-frame window), and state transition cooldown eliminate hand gesture oscillation
-- **Left/Right Confidence Display**: Real-time gesture name, confidence score, and hand detection confidence shown separately for each hand
-- **Low Latency**: ~18fps capture rate, optimized JPEG compression, pre-allocated particle buffers
+基于动态时间规整（DTW）算法的手势序列分类器，支持复合手势命令：
 
-## Tech Stack
+DTW-based gesture sequence classifier supporting compound gesture commands:
 
-- **Backend**: Python, FastAPI, WebSocket, MediaPipe Hand Landmarker
-- **Frontend**: Three.js, Canvas 2D overlay, Web Audio API
-- **Communication**: WebSocket for real-time bidirectional frame/gesture data
+| 序列 Sequence | 命令 Command |
+|---------|--------|
+| 握拳 → 挥手 / Fist → Wave | 切换材质 / Switch material |
+| 捏合 → 握拳 / Pinch → Fist | 重置视图 / Reset view |
+| 挥手×3 / Wave × 3 | 显示帮助 / Show help |
+| 握拳 → 捏合 → 挥手 / Fist → Pinch → Wave | 粒子爆发 / Particle burst |
+| 指向 → 握拳 / Point → Fist | 切换线框 / Toggle wireframe |
+| 捏合 → 指向 / Pinch → Point | 放大模型 / Zoom in |
+| 指向 → 捏合 / Point → Pinch | 缩小模型 / Zoom out |
+| 握拳 → 挥手 → 握拳 / Fist → Wave → Fist | 旋转爆炸 / Explode |
 
-## Requirements
+**自定义模板 / Custom Templates**：用户可录制最多5个自定义手势序列模板，阈值可调。
+Users can record up to 5 custom gesture sequence templates with adjustable threshold.
+
+### 🆕 语音命令 / Voice Commands
+
+基于Web Speech API的中文语音识别，支持以下命令词：
+
+Chinese voice commands via Web Speech API:
+
+| 命令词 Command | 意图 Intent |
+|---------|--------|
+| "切换材质" / "换材质" | 切换模型材质 / Switch material |
+| "重置" / "复位" | 重置视图 / Reset view |
+| "帮助" / "说明" | 显示帮助面板 / Show help |
+| "放大" / "大一点" | 放大模型 / Zoom in |
+| "缩小" / "小一点" | 缩小模型 / Zoom out |
+| "左转" / "向左旋转" | 向左旋转 / Rotate left |
+| "右转" / "向右旋转" | 向右旋转 / Rotate right |
+| "换色" / "换颜色" | 切换颜色 / Change color |
+| "爆炸" / "粒子爆炸" | 粒子爆炸 / Explode |
+| "线框" / "切换线框" | 切换线框显示 / Toggle wireframe |
+
+### 🆕 多模态融合 / Multimodal Fusion
+
+手势序列和语音命令通过融合引擎协同工作：
+
+Gesture sequences and voice commands work together through the fusion engine:
+
+- **同意图融合**：手势和语音同时触发相同意图时，置信度加权提升并立即执行
+  When both modalities trigger the same intent, confidence is boosted and executed immediately
+- **冲突解决**：支持三种优先级策略
+  Three priority strategies for conflicts:
+  - 最近优先 / Recent wins（默认）
+  - 手势优先 / Gesture first
+  - 语音优先 / Voice first
+- **独立触发**：单模态高置信度事件可独立触发动作
+  Single modality events with high confidence trigger independently
+- **时间对齐**：500ms时间窗口内对齐事件，响应延迟<200ms
+  500ms alignment window, response latency <200ms
+
+### 调试面板 / Debug Panel
+
+实时显示系统内部状态：
+
+- 手势序列流可视化（手势段+持续时间）
+- 语音识别文本（中间结果+最终结果）
+- 融合决策日志（来源、意图、置信度、策略）
+- DTW阈值滑块调整
+- 融合优先级模式切换
+- 自定义模板录制和管理
+
+## 技术栈 / Tech Stack
+
+- **后端 Backend**: Python, FastAPI, WebSocket, MediaPipe Hand Landmarker
+- **前端 Frontend**: Three.js, Canvas 2D overlay, Web Audio API, Web Speech API
+- **通信 Communication**: WebSocket双向实时帧/手势数据
+- **算法 Algorithms**: DTW动态时间规整（手写实现）、多模态决策融合（手写实现）
+
+## 系统要求 / Requirements
 
 - Python 3.10+
-- Webcam
-- Modern browser (Chrome/Edge recommended)
+- 摄像头 Webcam
+- 麦克风 Microphone（语音功能需要）
+- 现代浏览器 Modern browser (Chrome/Edge recommended, 语音识别需要Chrome)
 
-## Setup
+## 安装与运行 / Setup
 
-### 1. Install Dependencies
+### 1. 安装依赖 / Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Download MediaPipe Hand Landmarker Model
+### 2. 下载MediaPipe模型 / Download Model
 
-The model file `hand_landmarker.task` must be in the project root. Download from:
+`hand_landmarker.task` 必须在项目根目录，下载地址:
 
 ```
 https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
 ```
 
-### 3. Run
+### 3. 运行 / Run
 
 ```bash
 python server.py
 ```
 
-Or use the provided scripts:
-
+或使用脚本 / Or use scripts:
 - **Windows**: `start.bat`
 - **Linux/macOS**: `./start.sh`
 
-Then open the URL shown in the console (default `http://localhost:8000`, auto-increments if port is occupied).
+打开控制台显示的URL（默认 `http://localhost:8000`）。
 
-## Startup Behavior
-
-- **Auto port scanning**: If port 8000 is occupied, the server scans 8001-8099 and uses the first available port. The actual URL is printed to console.
-- **Model file discovery**: Searches for `hand_landmarker.task` in the project root and common locations. Prints clear error with download link if missing.
-- **MediaPipe retry**: Up to 3 initialization attempts with 1s delay between retries.
-- **Detailed logging**: All operations print timestamped logs to console for debugging.
-
-## Architecture
+## 架构 / Architecture
 
 ```
-Browser (webcam) --[WebSocket: JPEG frames]--> FastAPI Server
-                                                  |
-                                           MediaPipe Detection
-                                           (2 hands, landmarks)
-                                                  |
-                                           DualHandTracker
-                                          /                \
-                              Left GSM                Right GSM
-                          (independent state)     (independent state)
-                                          \                /
-                                           Dual Coordination
-                                           (proximity, zoom)
-                                                  |
-Browser <--[WebSocket: JSON gesture data]-- Response Builder
-   |
-   ├── Left/Right Gesture Display (UI)
-   ├── Three.js 3D Model Control
-   ├── Particle Effects (wave, explosion)
-   └── Hand Overlay (Canvas 2D)
+Browser (webcam + mic)
+    |
+    ├── 摄像头帧 --[WebSocket: JPEG]--> FastAPI Server
+    |                                      |
+    |                                MediaPipe检测 (2手, 关键点)
+    |                                      |
+    |                                DualHandTracker
+    |                               /              \
+    |                     Left GSM              Right GSM
+    |                               \              /
+    |                                Dual协调 (接近, 缩放)
+    |                                      |
+    |   <--[WebSocket: JSON手势数据]--  Response + server_ts
+    |
+    ├── 手势序列识别器 (DTW)
+    |       └── 连续匹配预定义+自定义模板
+    |
+    ├── 语音识别器 (Web Speech API)
+    |       └── 命令词→意图映射
+    |
+    ├── 多模态融合引擎
+    |       ├── 时间窗口对齐 (500ms)
+    |       ├── 同意图融合 (置信度提升)
+    |       ├── 冲突解决 (优先级策略)
+    |       └── 独立触发 (高置信单模态)
+    |
+    ├── 意图执行器 → Three.js 3D模型控制
+    |
+    └── 调试面板 (手势流 + 语音 + 融合日志)
 ```
 
-## Gesture Recognition Pipeline
+## 模块结构 / Module Structure
 
-1. **Frame Capture**: Browser sends 320x240 JPEG frames at ~18fps
-2. **Hand Detection**: MediaPipe detects up to 2 hands with landmarks and handedness classification
-3. **Hand Assignment**: Hands are classified as Left/Right based on MediaPipe handedness labels
-4. **Per-Hand Processing**: Each hand runs through its own `GestureStateMachine`:
-   - Finger curl computation (angle-based)
-   - Raw gesture classification (fist, pinch, pointing, wave, none)
-   - 5-frame majority vote for stability
-   - State machine with transition cooldown
-   - EMA smoothing on continuous values
-5. **Dual-Hand Coordination**: When both hands are detected:
-   - Palm distance monitoring for reset gesture
-   - Dual-pointing detection for zoom control
-6. **Digit Recognition**: Count of extended fingers per hand (thumb uses x-distance heuristic)
+```
+static/
+├── index.html              主页面 + 集成逻辑
+├── three.min.js            Three.js r152
+└── js/
+    ├── gesture-sequence.js  DTW手势序列识别器
+    ├── voice-recognition.js 语音命令识别模块
+    ├── multimodal-fusion.js 多模态融合决策引擎
+    └── debug-panel.js       调试面板UI模块
+```
 
-## Controls Reference
+## 配置 / Configuration
 
-| Input | Effect |
-|-------|--------|
-| Left fist + move left/right | Rotate model horizontally |
-| Right fist + move up/down | Tilt model vertically |
-| Right pinch | Scale model + particle wave |
-| Both index fingers + move apart/together | Zoom in/out |
-| Left wave (shake hand) | Cycle model color |
-| Right wave (shake hand) | Trigger explosion particles |
-| Both palms together (hold 1s) | Reset to default view |
+### 服务器参数 (server.py)
 
-## Configuration
-
-Key thresholds can be adjusted in `server.py`:
-
-| Parameter | Default | Description |
+| 参数 Parameter | 默认值 Default | 说明 Description |
 |-----------|---------|-------------|
-| `FIST_CURL_THRESHOLD` | 0.32 | Minimum weighted curl for fist detection |
-| `PINCH_RATIO` | 0.45 | Max thumb-index distance (relative to palm) for pinch |
-| `WAVE_SPEED_THRESHOLD` | 0.45 | Minimum speed for wave detection |
-| `PROXIMITY_THRESHOLD` | 0.12 | Palm distance threshold for reset gesture |
-| `PROXIMITY_HOLD_TIME` | 1.0 | Seconds palms must stay close for reset |
-| `EMA_ALPHA` | 0.35 | Smoothing factor (higher = more responsive, less smooth) |
+| `FIST_CURL_THRESHOLD` | 0.30 | 握拳检测最低curl值 |
+| `PINCH_RATIO` | 0.50 | 捏合距离阈值（相对手掌） |
+| `WAVE_SPEED_THRESHOLD` | 0.25 | 挥手检测最低速度 |
+| `PROXIMITY_THRESHOLD` | 0.12 | 重置手势掌心距离阈值 |
+| `EMA_ALPHA` | 0.30 | EMA平滑系数 |
 
-## Troubleshooting
+### 前端参数 (可通过调试面板调整)
 
-- **Hands not detected**: Ensure good lighting and that hands are clearly visible in the camera frame
-- **Left/right confused**: MediaPipe handedness can swap occasionally; keep hands separated for best results
-- **High latency**: Reduce browser tab load; the system is designed for ~18fps send rate
-- **Model file missing**: Download `hand_landmarker.task` to the project root directory
+| 参数 Parameter | 默认值 Default | 说明 Description |
+|-----------|---------|-------------|
+| DTW匹配阈值 | 0.55 | 序列匹配灵敏度(0.2-0.9) |
+| 融合时间窗口 | 500ms | 多模态事件对齐时间范围 |
+| 融合优先级 | recent | 冲突解决策略 |
+| 执行冷却 | 800ms | 同一动作重复触发间隔 |
 
-## License
+## 性能 / Performance
+
+- Three.js渲染: ≥30fps（预分配粒子缓冲区，DTW不在渲染循环中）
+- 手势识别延迟: ~55ms/帧（摄像头发送间隔）
+- DTW匹配检测: 每4帧一次（~220ms），8×25矩阵计算<0.1ms
+- 多模态融合延迟: <200ms（高置信度直接执行，低置信度180ms延迟等待）
+- 语音识别: Web Speech API异步，不阻塞渲染线程
+
+## 故障排除 / Troubleshooting
+
+- **手部未检测到**: 确保光照良好，手在摄像头画面内清晰可见
+- **左右混淆**: 保持双手分开以获得最佳识别效果
+- **语音无响应**: 确认使用Chrome浏览器，已授予麦克风权限
+- **手势序列不触发**: 降低DTW阈值（调试面板中调整），确保动作连贯
+- **帧率低**: 减少浏览器标签页数量，关闭调试面板可略微提升性能
+
+## 许可证 / License
 
 MIT

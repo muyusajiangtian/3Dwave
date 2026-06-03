@@ -98,8 +98,8 @@ app = FastAPI()
 # ============================================================
 FIST_CURL_THRESHOLD = 0.30
 PINCH_RATIO = 0.50
-WAVE_FRAMES = 4
-WAVE_SPEED_THRESHOLD = 0.25  # 降低：基于归一化掌心速度，更灵敏
+WAVE_FRAMES = 5
+WAVE_SPEED_THRESHOLD = 0.25  # 基于归一化掌心速度
 WAVE_COOLDOWN = 0.8
 EMA_ALPHA = 0.30  # 稍微平滑一些，减少远距离抖动
 MIN_HAND_CONFIDENCE = 0.40  # 降低：允许远距离手部检测
@@ -107,8 +107,7 @@ MIN_HAND_CONFIDENCE = 0.40  # 降低：允许远距离手部检测
 POINTING_INDEX_MAX_CURL = 0.28
 POINTING_OTHER_MIN_CURL = 0.32
 
-PROXIMITY_THRESHOLD = 0.12
-PROXIMITY_HOLD_TIME = 1.0
+PROXIMITY_HOLD_TIME = 0.5
 
 # 数字识别阈值 - 使用指尖高于对应MCP关节来判断伸展
 DIGIT_EXTENDED_CURL_THRESHOLD = 0.28  # curl < 此值 = 手指伸展
@@ -331,31 +330,31 @@ class GestureStateMachine:
         return result
 
     def _compute_palm_speed_normalized(self):
-        """计算掌心移动速度，归一化到手掌大小。远距离时手掌变小，归一化后挥手更容易被检测到。"""
-        if len(self.pos_history) < 3:
+        """计算掌心移动速度：使用最近5帧的平均速度，归一化到手掌大小。"""
+        if len(self.pos_history) < 5:
             return 0.0
 
-        recent = list(self.pos_history)[-WAVE_FRAMES:]
-        if len(recent) < 2:
-            return 0.0
-
+        # 取最近5帧计算平均速度
+        recent = list(self.pos_history)[-5:]
         total_time = recent[-1][2] - recent[0][2]
         if total_time < 0.02:
             return 0.0
 
-        # 累积位移（x+y）
+        # 逐帧位移求和
         cum_disp = 0.0
         for i in range(1, len(recent)):
-            dx = abs(recent[i][0] - recent[i-1][0])
-            dy = abs(recent[i][1] - recent[i-1][1])
+            dx = recent[i][0] - recent[i-1][0]
+            dy = recent[i][1] - recent[i-1][1]
             cum_disp += math.sqrt(dx*dx + dy*dy)
 
-        # 归一化到手掌大小
-        speed_raw = cum_disp / total_time
-        speed_norm = speed_raw / self.last_palm_size if self.last_palm_size > 0.01 else speed_raw
+        # 平均速度 = 累积位移 / 总时间
+        avg_speed = cum_disp / total_time
 
-        # EMA平滑速度
-        self.ema_palm_speed = self.ema(self.ema_palm_speed, speed_norm, 0.4)
+        # 归一化到手掌大小
+        speed_norm = avg_speed / self.last_palm_size if self.last_palm_size > 0.01 else avg_speed
+
+        # EMA平滑（避免单帧跳变）
+        self.ema_palm_speed = self.ema(self.ema_palm_speed, speed_norm, 0.35)
         return self.ema_palm_speed
 
     def _classify_frame(self, curls, fist_strength, pinch_norm, p_size, now, landmarks, palm_speed_norm):
@@ -414,30 +413,32 @@ class GestureStateMachine:
         if is_fist:
             return "fist"
 
-        # === 挥手检测（改进：归一化掌心速度 + x方向振荡） ===
+        # === 挥手检测（最近5帧平均速度 + 振荡确认 + 冷却0.8s） ===
         if len(self.pos_history) >= WAVE_FRAMES and fist_strength < 0.28:
             recent = list(self.pos_history)[-WAVE_FRAMES:]
             total_time = recent[-1][2] - recent[0][2]
-            if total_time > 0.04:
-                # x方向振荡检测
-                xs = [p[0] for p in recent]
-                x_range = max(xs) - min(xs)
-                # 归一化到手掌大小
-                x_range_norm = x_range / self.last_palm_size if self.last_palm_size > 0.01 else x_range
+            if total_time > 0.05:
+                # x方向逐帧位移累积
+                x_cum_disp = 0.0
+                for i in range(1, len(recent)):
+                    x_cum_disp += abs(recent[i][0] - recent[i-1][0])
+                # 5帧平均x速度（归一化到手掌大小）
+                x_avg_speed = (x_cum_disp / total_time) / self.last_palm_size if self.last_palm_size > 0.01 else 0
 
-                # 方向变化
+                # x方向振荡检测（要求至少2次方向变化，确保是左右摆动）
+                xs = [p[0] for p in recent]
                 dir_changes = 0
                 for i in range(2, len(xs)):
                     if (xs[i]-xs[i-1]) * (xs[i-1]-xs[i-2]) < -0.0001:
                         dir_changes += 1
 
-                # 使用归一化速度判定（远距离时手掌变小，速度归一化后更容易触发）
-                speed_ok = palm_speed_norm > WAVE_SPEED_THRESHOLD
-                oscillation_ok = x_range_norm > 0.3 and dir_changes >= 1
+                # 判定条件：5帧平均速度+全局EMA速度双重确认 + 振荡
+                speed_ok = palm_speed_norm > WAVE_SPEED_THRESHOLD and x_avg_speed > 0.2
+                oscillation_ok = dir_changes >= 2
 
                 if speed_ok and oscillation_ok:
                     self.wave_confirm_count += 1
-                    if self.wave_confirm_count >= 2 and now - self.wave_last_time > WAVE_COOLDOWN:
+                    if self.wave_confirm_count >= 3 and now - self.wave_last_time > WAVE_COOLDOWN:
                         self.wave_confirm_count = 0
                         return "wave"
                 else:
@@ -698,11 +699,17 @@ class DualHandTracker:
         dy = left_palm[1] - right_palm[1]
         palm_dist = math.sqrt(dx*dx + dy*dy)
 
+        # 动态阈值：基于双手手掌平均宽度（一个手掌宽度内即触发）
+        left_psize = palm_size(left_lm)
+        right_psize = palm_size(right_lm)
+        avg_palm_size = (left_psize + right_psize) / 2.0
+        dynamic_threshold = avg_palm_size * 1.0  # 距离小于一个手掌宽度
+
         reset_triggered = False
-        if palm_dist < PROXIMITY_THRESHOLD:
+        if palm_dist < dynamic_threshold:
             if self.proximity_start is None:
                 self.proximity_start = now
-                log("DUAL", f"Proximity detected: dist={palm_dist:.3f} < {PROXIMITY_THRESHOLD}")
+                log("DUAL", f"Proximity detected: dist={palm_dist:.3f} < threshold={dynamic_threshold:.3f} (palm_size={avg_palm_size:.3f})")
             elif now - self.proximity_start >= PROXIMITY_HOLD_TIME:
                 reset_triggered = True
                 self.proximity_start = None
@@ -792,6 +799,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 response = tracker.process(results)
+                # 添加服务器时间戳，供前端多模态事件对齐使用
+                response["server_ts"] = int(time.time() * 1000)
 
                 t1 = time.time()
                 frame_times.append(t1 - t0)
